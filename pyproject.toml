@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rosenblatt"
+version = "0.1.0"
+description = "A tiny SIMT GPU in Verilog, with its assembler, emulator and runtime"
+requires-python = ">=3.10"
+dependencies = ["numpy"]
+
+[project.optional-dependencies]
+sim = ["cocotb>=2.0"]
+ml = ["torch"]
+fpga = ["pyserial"]
+
+[tool.setuptools.packages.find]
+where = ["sw"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "rtl: runs the Verilog in a simulator (slow)",
+]

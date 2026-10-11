@@ -1,0 +1,4 @@
+float32 0.9777
+int8_ptq 0.9774
+int8_qat 0.9780
+int8_deployed 0.9780
