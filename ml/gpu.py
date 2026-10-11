@@ -127,3 +127,114 @@ class GpuMLP:
         )]
         return InferenceResult(dev.download(self.phidden, self.n_hidden, np.int8).astype(np.int32),
                                dev.download(self.poutput, self.n_output), runs)
+
+
+TILED_KERNEL = Path(__file__).resolve().parents[1] / "kernels" / "dense_tiled.s"
+
+
+@dataclass
+class BatchResult:
+    hidden: np.ndarray   # (batch, n_hidden)
+    logits: np.ndarray   # (batch, n_output)
+    runs: list[LaunchResult]
+
+    @property
+    def predictions(self) -> np.ndarray:
+        return np.argmax(self.logits, axis=1)
+
+
+class BatchMLP:
+    """Batched inference through the shared-memory tiled kernel (kernels/dense_tiled.s).
+
+    Each block computes THREADS neurons for BT = 8 images and stages the
+    images' inputs in shared memory, so every weight fetched from global
+    memory is reused for 8 images instead of 1. This is the kernel the
+    profiling study compares against GpuMLP's one-image-at-a-time approach.
+
+    Needs blocks of exactly 32 threads (the default 8 lanes x 4 warps).
+    """
+
+    BT = 8    # images per block
+    KC = 16   # input bytes staged per step (BT * KC / 4 == 32 threads)
+
+    def __init__(self, device: Device, model: QuantMLP, batch: int, *, dp4a: bool | None = None):
+        cfg = device.cfg
+        self.threads = cfg.max_threads
+        if self.threads != self.BT * self.KC // 4:
+            raise ValueError(f"BatchMLP needs {self.BT * self.KC // 4}-thread blocks, device has {self.threads}")
+        self.device = device
+        self.dp4a = cfg.dp4a if dp4a is None else dp4a
+        if self.dp4a and not cfg.dp4a:
+            raise ValueError("DP4A is not supported by this device")
+        self.model = model
+        n_hidden, n_input = model.w1.shape
+        n_output = model.w2.shape[0]
+        self.n_input, self.n_hidden, self.n_output = n_input, n_hidden, n_output
+        _check_accumulator(np.asarray(model.w1), np.asarray(model.b1), 1 << (int(model.sh1) - 1))
+        _check_accumulator(np.asarray(model.w2), np.asarray(model.b2), 0)
+        up = lambda n, m: (n + m - 1) // m * m  # noqa: E731
+        self.k1 = up(n_input, self.KC)                 # padded input width
+        self.n1 = up(n_hidden, self.threads)           # padded hidden width = layer-2 input width
+        self.n2 = up(n_output, self.threads)
+        if self.n1 % self.KC:
+            raise ValueError("padded hidden width must be a multiple of KC")
+        self.batch = up(batch, self.BT)
+
+        def pad2(a, rows, cols):
+            out = np.zeros((rows, cols), dtype=np.int8)
+            out[:a.shape[0], :a.shape[1]] = a
+            return out
+
+        def pad1(a, n):
+            out = np.zeros(n, dtype=np.int32)
+            out[:a.shape[0]] = a
+            return out
+
+        self.pw1 = device.upload(pad2(model.w1, self.n1, self.k1))
+        self.pb1 = device.upload(pad1(model.b1, self.n1))
+        self.pw2 = device.upload(pad2(model.w2, self.n2, self.n1))
+        self.pb2 = device.upload(pad1(model.b2, self.n2))
+        self.px = device.alloc(self.batch * self.k1)
+        self.ph = device.alloc(self.batch * self.n1)
+        self.py = device.alloc(self.batch * self.n2 * 4)
+
+        def kernel(n_pad: int, requantize: bool, base: int):
+            groups = n_pad // self.threads
+            return assemble_file(str(TILED_KERNEL), base=base, defines={
+                "THREADS": self.threads, "BT": self.BT, "KC": self.KC,
+                "LOG_KC": self.KC.bit_length() - 1, "LOG_KC_WORDS": (self.KC // 4).bit_length() - 1,
+                "LOG_NGROUPS": groups.bit_length() - 1, "DP4A": int(self.dp4a),
+                "REQUANTIZE": int(requantize)})
+
+        for n in (self.n1, self.n2):
+            groups = n // self.threads
+            if groups & (groups - 1):
+                raise ValueError("padded layer widths must be a power-of-two number of blocks")
+        hidden = kernel(self.n1, True, 0)
+        output = kernel(self.n2, False, hidden.end)
+        self.program = link({"hidden": hidden, "output": output})
+        if len(self.program) > cfg.imem_words:
+            raise ValueError("tiled kernels do not fit device instruction memory")
+
+    def run(self, q0: np.ndarray) -> BatchResult:
+        """Infer a batch of preprocessed inputs, shape (n, n_input), values 0..127."""
+        q0 = _integer_array(q0, "input", 0, 127)
+        if q0.ndim != 2 or q0.shape[1] != self.n_input or not 0 < q0.shape[0] <= self.batch:
+            raise ValueError(f"input must have shape (1..{self.batch}, {self.n_input})")
+        n = q0.shape[0]
+        x = np.zeros((self.batch, self.k1), dtype=np.int8)
+        x[:n, :self.n_input] = q0
+        dev = self.device
+        dev.write(self.px, x)
+        dev.load(self.program)
+        blocks = self.batch // self.BT
+        shift = int(self.model.sh1)
+        runs = [
+            dev.launch(grid=blocks * (self.n1 // self.threads), block=self.threads, entry="hidden",
+                       args=[self.px, self.pw1, self.pb1, self.ph, self.k1, self.n1, shift]),
+            dev.launch(grid=blocks * (self.n2 // self.threads), block=self.threads, entry="output",
+                       args=[self.ph, self.pw2, self.pb2, self.py, self.n1, self.n2, 0]),
+        ]
+        hidden = dev.download(self.ph, self.batch * self.n1, np.int8).reshape(self.batch, self.n1)
+        logits = dev.download(self.py, self.batch * self.n2, np.int32).reshape(self.batch, self.n2)
+        return BatchResult(hidden[:n, :self.n_hidden].astype(np.int32), logits[:n, :self.n_output], runs)

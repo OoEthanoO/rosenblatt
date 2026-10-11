@@ -27,13 +27,18 @@ def tool_env() -> None:
 
 def run(cfg: Config, test_module: str, env: dict[str, str], sim: str = "icarus",
         waves: bool = False, test_dir: Path | None = None, toplevel: str = "rb_gpu",
-        extra_sources: list[Path] | None = None) -> None:
+        extra_sources: list[Path] | None = None,
+        parameters: dict[str, int] | None = None, build_tag: str = "") -> None:
+    """Compile (cached per parameter set) and run one cocotb test module.
+
+    Give concurrent runs different `build_tag`s so they use separate directories.
+    """
     from cocotb_tools.runner import get_runner
 
     tool_env()
-    params = cfg.verilog_params()
+    params = cfg.verilog_params() if parameters is None else parameters
     tag = hashlib.sha1(json.dumps([params, toplevel], sort_keys=True).encode()).hexdigest()[:10]
-    build_dir = ROOT / "build" / "sim" / f"{sim}_{toplevel}_{tag}"
+    build_dir = ROOT / "build" / "sim" / f"{sim}_{toplevel}_{tag}{'_' + build_tag if build_tag else ''}"
     runner = get_runner(sim)
     sources = [RTL / s for s in SOURCES] + list(extra_sources or [])
     runner.build(sources=sources, includes=[RTL], hdl_toplevel=toplevel, parameters=params,
@@ -42,4 +47,4 @@ def run(cfg: Config, test_module: str, env: dict[str, str], sim: str = "icarus",
     full_env.update(env)
     runner.test(hdl_toplevel=toplevel, test_module=test_module,
                 test_dir=test_dir or Path(__file__).parent, build_dir=build_dir,
-                extra_env=full_env, waves=waves)
+                extra_env=full_env, waves=waves, results_xml=str(build_dir / "results.xml"))

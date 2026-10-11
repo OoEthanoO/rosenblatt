@@ -50,7 +50,7 @@ module rb_uart_bridge #(
     endfunction
 
     reg [3:0] state;
-    reg [7:0] command, sequence, count, word_index;
+    reg [7:0] command, sequence_id, count, word_index;
     reg [2:0] header_index;
     reg [1:0] byte_index;
     reg [23:0] address;
@@ -74,7 +74,7 @@ module rb_uart_bridge #(
         case (tx_index)
             0: tx_data = 8'h52;
             1: tx_data = 8'h42;
-            2: tx_data = sequence;
+            2: tx_data = sequence_id;
             3: tx_data = response_status;
             4: tx_data = response_count;
             default: begin
@@ -114,7 +114,7 @@ module rb_uart_bridge #(
         if (rst) begin
             state <= SYNC0;
             command <= 0;
-            sequence <= 0;
+            sequence_id <= 0;
             count <= 0;
             word_index <= 0;
             header_index <= 0;
@@ -154,7 +154,7 @@ module rb_uart_bridge #(
                     crc <= crc_byte(crc, rx_data);
                     case (header_index)
                         0: command <= rx_data;
-                        1: sequence <= rx_data;
+                        1: sequence_id <= rx_data;
                         2: address[7:0] <= rx_data;
                         3: address[15:8] <= rx_data;
                         4: address[23:16] <= rx_data;

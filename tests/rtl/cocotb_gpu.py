@@ -119,7 +119,7 @@ def run_scenarios(dut, cfg: Config, names: list[str], seeds: list[int]) -> list[
     rtl = Device(CocotbBackend(dut, cfg))
     hw = rtl.backend.read_config()
     for field in ("num_cores", "num_lanes", "num_warps", "imem_words", "gmem_bytes", "smem_bytes",
-                  "stack_depth", "mul_width", "dp4a", "gmem_latency"):
+                  "stack_depth", "mul_width", "dp4a", "gmem_latency", "gmem_interval", "lsu_depth", "park"):
         assert getattr(hw, field) == getattr(cfg, field), f"HWCFG {field}: {getattr(hw, field)} != {getattr(cfg, field)}"
     errors: list[str] = []
     for name in names:
@@ -128,7 +128,7 @@ def run_scenarios(dut, cfg: Config, names: list[str], seeds: list[int]) -> list[
             rtl.reset_heap()
             rtl_out = SCENARIOS[name](rtl, seed)
             errs = compare(f"{name}/{seed}", emu_out, rtl_out)
-            cyc = rtl_out.runs[0].cycles
+            cyc = sum(r.cycles for r in rtl_out.runs) if rtl_out.runs else 0
             dut._log.info(f"{name:18s} seed {seed}: {'OK' if not errs else 'MISMATCH'}  {cyc} cycles")
             errors += errs
     return errors

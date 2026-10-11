@@ -68,6 +68,7 @@
 `define RB_CSR_HWCFG0    8'h18
 `define RB_CSR_HWCFG1    8'h19
 `define RB_CSR_HWCFG2    8'h1A
+`define RB_CSR_HWCFG3    8'h1B
 `define RB_CSR_PERF_BASE 8'h40
 `define RB_PERF_STRIDE 8'h10
 

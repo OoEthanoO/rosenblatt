@@ -31,7 +31,9 @@ module rb_gpu #(
     parameter MUL_WIDTH     = 32,
     parameter ENABLE_DP4A   = 1,
     parameter GMEM_LATENCY  = 8,
-    parameter GMEM_INTERVAL = 1
+    parameter GMEM_INTERVAL = 1,
+    parameter LSU_DEPTH     = 4,
+    parameter PARK          = 0
 ) (
     input  wire        clk,
     input  wire        rst,
@@ -54,6 +56,7 @@ module rb_gpu #(
     localparam [7:0] P_SMEM  = SMEM_AW,    P_GMEM  = GMEM_AW,   P_IMEM  = IMEM_AW;
     localparam [7:0] P_MULW  = MUL_WIDTH,  P_STACK = STACK_DEPTH, P_LAT = GMEM_LATENCY;
     localparam [7:0] P_FEAT  = ENABLE_DP4A ? `RB_FEATURE_DP4A : 8'd0;
+    localparam [7:0] P_LSUD  = LSU_DEPTH,  P_INTV  = GMEM_INTERVAL, P_PARK = PARK;
 
     // ================================================================ host bus
     wire h_gmem = host_addr[23:20] == 4'h0;
@@ -147,7 +150,9 @@ module rb_gpu #(
     // ---- CSR / memory read responses
     reg [31:0] csr_rdata;
     always @* begin : p_csr
-        integer core, idx;
+        integer c, k;
+        c = 0;          // loop variables are assigned on every path,
+        k = 0;          // otherwise Yosys infers latches for them
         csr_rdata = 32'd0;
         case (csr_off)
             `RB_CSR_CTRL:      csr_rdata = {29'd0, |core_err, done, running};
@@ -160,15 +165,15 @@ module rb_gpu #(
             `RB_CSR_HWCFG0:    csr_rdata = {`RB_HW_VERSION, P_CORES, P_WARPS, P_LANES};
             `RB_CSR_HWCFG1:    csr_rdata = {P_FEAT, P_SMEM, P_GMEM, P_IMEM};
             `RB_CSR_HWCFG2:    csr_rdata = {8'd0, P_MULW, P_STACK, P_LAT};
+            `RB_CSR_HWCFG3:    csr_rdata = {8'd0, P_PARK, P_INTV, P_LSUD};
             default: begin
-                if (csr_off >= `RB_CSR_ARG0 && csr_off < `RB_CSR_ARG0 + 8)
-                    csr_rdata = args[csr_off[2:0]];
-                else if (csr_off >= `RB_CSR_PERF_BASE) begin
-                    core = (csr_off - `RB_CSR_PERF_BASE) / `RB_PERF_STRIDE;
-                    idx  = (csr_off - `RB_CSR_PERF_BASE) % `RB_PERF_STRIDE;
-                    if (core < NC && idx < `RB_NUM_PERF)
-                        csr_rdata = core_perf[(core * `RB_NUM_PERF + idx) * 32 +: 32];
-                end
+                for (k = 0; k < 8; k = k + 1)
+                    if (csr_off == `RB_CSR_ARG0 + k) csr_rdata = args[k];
+                // performance counters: constant indices only (no multiplier)
+                for (c = 0; c < NC; c = c + 1)
+                    for (k = 0; k < `RB_NUM_PERF; k = k + 1)
+                        if (csr_off == `RB_CSR_PERF_BASE + c * `RB_PERF_STRIDE + k)
+                            csr_rdata = core_perf[(c * `RB_NUM_PERF + k) * 32 +: 32];
             end
         endcase
     end
@@ -212,7 +217,8 @@ module rb_gpu #(
             rb_core #(
                 .CORE_ID(gc), .W(NUM_LANES), .NW(NUM_WARPS), .IMEM_AW(IMEM_AW),
                 .GMEM_AW(GMEM_AW), .SMEM_AW(SMEM_AW), .STACK_DEPTH(STACK_DEPTH),
-                .MUL_WIDTH(MUL_WIDTH), .ENABLE_DP4A(ENABLE_DP4A)
+                .MUL_WIDTH(MUL_WIDTH), .ENABLE_DP4A(ENABLE_DP4A),
+                .LSU_DEPTH(LSU_DEPTH), .PARK(PARK)
             ) u_core (
                 .clk(clk), .rst(rst),
                 .imem_we(imem_we), .imem_waddr(host_addr[IMEM_AW-1:0]), .imem_wdata(host_wdata),

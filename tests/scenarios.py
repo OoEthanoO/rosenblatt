@@ -468,6 +468,34 @@ def mlp_trained(dev: Device, seed: int) -> Outcome:
     return Outcome({"hidden": result.hidden, "logits": result.logits}, result.runs)
 
 
+def mlp_tiled(dev: Device, seed: int) -> Outcome:
+    """Batched, shared-memory tiled inference (BatchMLP) with padded odd sizes.
+
+    Only meaningful on devices with 32-thread blocks; elsewhere it does nothing.
+    """
+    from ml.gpu import BatchMLP
+    from ml.qmlp import QuantMLP
+
+    if dev.cfg.max_threads != BatchMLP.BT * BatchMLP.KC // 4:
+        return Outcome()
+    rng = np.random.default_rng(seed)
+    model = QuantMLP(
+        rng.integers(-128, 128, (40, 45), dtype=np.int16).astype(np.int8),
+        rng.integers(-20000, 20000, 40, dtype=np.int32), 8,
+        rng.integers(-128, 128, (10, 40), dtype=np.int16).astype(np.int8),
+        rng.integers(-1000, 1000, 10, dtype=np.int32),
+    )
+    q0 = rng.integers(0, 128, (11, 45), dtype=np.int32)
+    outcome = Outcome()
+    for dp4a in ([True, False] if dev.cfg.dp4a else [False]):
+        res = BatchMLP(dev, model, batch=11, dp4a=dp4a).run(q0)
+        np.testing.assert_array_equal(res.hidden, model.hidden(q0))
+        np.testing.assert_array_equal(res.logits, model.logits(q0))
+        outcome.outputs[f"logits_{int(dp4a)}"] = res.logits
+        outcome.runs.extend(res.runs)
+    return outcome
+
+
 SCENARIOS = {
     "vecadd": vecadd,
     "matmul_naive": matmul_naive,
@@ -479,4 +507,5 @@ SCENARIOS = {
     "matmul_tiled": matmul_tiled,
     "mlp_int8": mlp_int8,
     "mlp_trained": mlp_trained,
+    "mlp_tiled": mlp_tiled,
 }

@@ -41,6 +41,8 @@ class Config:
     dp4a: bool = True
     gmem_latency: int = 8       # cycles; timing only, ignored by the emulator
     gmem_interval: int = 1      # cycles between accepted requests; timing only
+    lsu_depth: int = 4          # global memory instructions in flight per core; timing only
+    park: bool = False          # warps sleep (instead of retrying) while the LSU is busy; timing only
 
     @property
     def max_threads(self) -> int:
@@ -60,6 +62,8 @@ class Config:
             "ENABLE_DP4A": int(self.dp4a),
             "GMEM_LATENCY": self.gmem_latency,
             "GMEM_INTERVAL": self.gmem_interval,
+            "LSU_DEPTH": self.lsu_depth,
+            "PARK": int(self.park),
         }
 
 
@@ -373,11 +377,14 @@ class Emulator:
 
         # performance accounting, mirroring the hardware's coalescer / bank logic
         if shared:
+            # Each bank serves one row per wavefront: loads of the same word share
+            # it (broadcast); stores are written one lane per bank per wavefront.
             st["smem_instr"] += 1
-            banks: dict[int, set[int]] = {}
+            banks: dict[int, list[int]] = {}
             for _, word, _ in addrs:
-                banks.setdefault(word % cfg.num_lanes, set()).add(word // cfg.num_lanes)
-            st["smem_wavefronts"] += max((len(v) for v in banks.values()), default=0)
+                banks.setdefault(word % cfg.num_lanes, []).append(word // cfg.num_lanes)
+            per_bank = (len(rows) if store else len(set(rows)) for rows in banks.values())
+            st["smem_wavefronts"] += max(per_bank, default=0)
         else:
             st["gmem_instr"] += 1
             st["gmem_lanes"] += len(addrs)

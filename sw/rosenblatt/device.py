@@ -83,8 +83,10 @@ class BusBackend(Backend):
 
     # ---- configuration discovery
     def read_config(self) -> Config:
-        c0, c1, c2 = self.bus_read(isa.HOST_CSR_BASE + CSR.HWCFG0, 3)
-        return Config(
+        c0, c1, c2, c3 = self.bus_read(isa.HOST_CSR_BASE + CSR.HWCFG0, 4)
+        extra = {} if c3 == 0 else {"lsu_depth": c3 & 0xFF, "gmem_interval": c3 >> 8 & 0xFF,
+                                    "park": bool(c3 >> 16 & 0xFF)}
+        return Config(**extra,
             num_lanes=c0 & 0xFF, num_warps=c0 >> 8 & 0xFF, num_cores=c0 >> 16 & 0xFF,
             imem_words=1 << (c1 & 0xFF), gmem_bytes=4 << (c1 >> 8 & 0xFF),
             smem_bytes=4 << (c1 >> 16 & 0xFF), dp4a=bool(c1 >> 24 & isa.FEATURE_DP4A),

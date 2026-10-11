@@ -8,3 +8,4 @@ data/mnist/
 tests/rtl/results.xml
 *.vcd
 *.fst
+tests/rtl/*.xml

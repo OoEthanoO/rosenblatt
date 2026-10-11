@@ -75,7 +75,9 @@ module rb_gmem #(
     reg [31:0] mem [0:(1<<AW)-1];
     reg [31:0] q;
     integer ii;
+`ifndef SYNTHESIS  // simulation only: FPGA block RAM powers up as zero
     initial for (ii = 0; ii < (1 << AW); ii = ii + 1) mem[ii] = 32'd0;
+`endif
     always @(posedge clk) begin
         if (acc && we) begin
             if (wstrb[0]) mem[addr][7:0]   <= wdata[7:0];

@@ -1,0 +1,52 @@
+{
+  "gpu": {
+    "device": "NVIDIA GeForce RTX 5080 Laptop GPU",
+    "sms": 60,
+    "batch": 10000,
+    "upload_ms": 0.7234
+  },
+  "nvidia_smi": "NVIDIA GeForce RTX 5080 Laptop GPU, 3090, 14001, 617.42",
+  "methods": [
+    {
+      "method": "naive",
+      "reps": 150,
+      "batch_ms": 1.41719,
+      "ns_per_image": 141.719,
+      "bit_exact": true,
+      "accuracy": 0.978,
+      "images_per_second": 7056216.87988202,
+      "tops": 0.7171374339361695
+    },
+    {
+      "method": "dp4a",
+      "reps": 600,
+      "batch_ms": 0.33427,
+      "ns_per_image": 33.427,
+      "bit_exact": true,
+      "accuracy": 0.978,
+      "images_per_second": 29915936.21922398,
+      "tops": 3.040416429832171
+    },
+    {
+      "method": "tiled",
+      "reps": 2770,
+      "batch_ms": 0.07229,
+      "ns_per_image": 7.229,
+      "bit_exact": true,
+      "accuracy": 0.978,
+      "images_per_second": 138331719.46327293,
+      "tops": 14.058929312491353
+    },
+    {
+      "method": "cublas",
+      "reps": 4830,
+      "batch_ms": 0.04143,
+      "ns_per_image": 4.143,
+      "bit_exact": true,
+      "accuracy": 0.978,
+      "images_per_second": 241370987.20733768,
+      "tops": 24.531016171856145
+    }
+  ],
+  "ops_per_image": 101632
+}

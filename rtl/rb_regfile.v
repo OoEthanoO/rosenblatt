@@ -30,6 +30,7 @@ module rb_regfile #(
     reg [31:0] qa_r, qb_r, qc_r;
     reg        za, zb, zc;
 
+`ifndef SYNTHESIS  // simulation only: avoid X before a register is first written
     integer i;
     initial begin
         for (i = 0; i < (1 << AW); i = i + 1) begin
@@ -38,6 +39,7 @@ module rb_regfile #(
             copy_c[i] = 32'd0;
         end
     end
+`endif
 
     always @(posedge clk) begin
         if (we) begin

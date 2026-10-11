@@ -1,15 +1,24 @@
 // rb_lsu.v: the global-memory load/store unit of one core.
 //
-// It executes one warp-wide global load or store at a time; meanwhile the
-// other warps keep computing (and using shared memory), which is how a GPU
-// hides memory latency.
+// Global loads and stores of all warps of the core pass through here; while
+// they are in flight the warps that issued them wait and the other warps keep
+// computing, which is how a GPU hides memory latency.
 //
-// Coalescing: lanes are served lowest-first, and every waiting lane whose
-// address falls in the same 32-bit word as the chosen lane rides along on the
-// same request. 8 lanes reading 8 consecutive bytes cost 2 requests; 8 lanes
-// reading one address (broadcast) cost 1; 8 scattered bytes cost 8.
-// Requests are pipelined (one per cycle when the memory grants it); responses
-// return in order and a small FIFO remembers which lanes each one feeds.
+// Two stages:
+//   issue      takes one warp instruction and sends its requests, one per
+//              cycle (when the memory grants it). Coalescing: lanes are served
+//              lowest-first, and every waiting lane whose address falls in the
+//              same 32-bit word as the chosen lane rides along on the same
+//              request. 8 lanes reading 8 consecutive bytes cost 2 requests;
+//              8 lanes reading one address (broadcast) cost 1; 8 scattered
+//              bytes cost 8.
+//   in flight  up to DEPTH instructions whose requests are all sent wait here
+//              for their responses. The issue stage is free for the next
+//              instruction as soon as the last request of the previous one is
+//              sent, so several loads can be in flight at once
+//              (memory-level parallelism). Responses come back in order; a
+//              small FIFO records which slot and lanes each one feeds.
+// Instructions complete (write back) in the order they were accepted.
 //
 // When several lanes store to the same byte, the highest lane wins.
 `default_nettype none
@@ -17,7 +26,8 @@
 module rb_lsu #(
     parameter W       = 8,   // lanes (power of two, >= 2)
     parameter WB      = 2,   // warp-id bits
-    parameter GMEM_AW = 16   // global memory size, log2(words)
+    parameter GMEM_AW = 16,  // global memory size, log2(words)
+    parameter DEPTH   = 4    // instructions in flight (power of two, >= 1)
 ) (
     input  wire               clk,
     input  wire               rst,
@@ -52,20 +62,9 @@ module rb_lsu #(
     output wire               ev_gm_req
 );
     localparam LB = $clog2(W);
-    localparam S_IDLE = 2'd0, S_BUSY = 2'd1, S_DONE = 2'd2;
-
-    reg  [1:0]      state;
-    reg  [5:0]      op_q;
-    reg  [WB-1:0]   warp_q;
-    reg  [3:0]      rd_q;
-    reg  [W-1:0]    mask_q;
-    reg  [W*32-1:0] addr_q;
-    reg  [W*32-1:0] sdata_q;
-    reg  [W-1:0]    pending;   // lanes not yet sent to memory
-    reg  [W*32-1:0] result;
-
-    wire       is_store = op_q[2];
-    wire [1:0] size     = op_q[1:0];   // 00 word, 01 signed byte, 10 unsigned byte
+    localparam QB = (DEPTH > 1) ? $clog2(DEPTH) : 1;   // slot index bits
+    localparam FD = DEPTH * W;                         // response FIFO depth
+    localparam FB = $clog2(FD) + 1;
 
     function [31:0] extract(input [31:0] w, input [1:0] off, input [1:0] sz);
         reg [7:0] b;
@@ -84,107 +83,173 @@ module rb_lsu #(
         end
     endfunction
 
-    // ---- the lowest waiting lane leads the next request
-    reg [LB-1:0] lead;
+    // ================================================================ issue
+    reg             iu_busy;
+    reg  [5:0]      iu_op;
+    reg  [W-1:0]    iu_pending;   // lanes not yet sent
+    reg  [W*32-1:0] iu_addr;
+    reg  [W*32-1:0] iu_sdata;
+    reg  [QB-1:0]   iu_slot;      // in-flight slot this instruction belongs to
+
+    wire       iu_store = iu_op[2];
+    wire [1:0] iu_size  = iu_op[1:0];   // 00 word, 01 signed byte, 10 unsigned byte
+
+    // the lowest waiting lane leads the next request (constant-index loops only)
+    reg [GMEM_AW-1:0] lead_word;
     always @* begin : p_lead
         integer i;
-        lead = {LB{1'b0}};
+        lead_word = {GMEM_AW{1'b0}};
         for (i = W - 1; i >= 0; i = i - 1)
-            if (pending[i]) lead = i;
+            if (iu_pending[i]) lead_word = iu_addr[i*32+2 +: GMEM_AW];
     end
-    wire [GMEM_AW-1:0] lead_word = addr_q[lead*32+2 +: GMEM_AW];
 
     reg [W-1:0] served;   // lanes served by this request
     always @* begin : p_cover
         integer i;
         for (i = 0; i < W; i = i + 1)
-            served[i] = pending[i] && (addr_q[i*32+2 +: GMEM_AW] == lead_word);
+            served[i] = iu_pending[i] && (iu_addr[i*32+2 +: GMEM_AW] == lead_word);
     end
 
-    // ---- merge the store data of all covered lanes into one word
+    // merge the store data of all served lanes into one word
     always @* begin : p_merge
         integer i;
         gm_req_wdata = 32'd0;
         gm_req_wstrb = 4'd0;
         for (i = 0; i < W; i = i + 1) begin
             if (served[i]) begin
-                if (size == 2'b00) begin
-                    gm_req_wdata = sdata_q[i*32 +: 32];
+                if (iu_size == 2'b00) begin
+                    gm_req_wdata = iu_sdata[i*32 +: 32];
                     gm_req_wstrb = 4'hF;
                 end else begin
-                    gm_req_wdata[addr_q[i*32 +: 2]*8 +: 8] = sdata_q[i*32 +: 8];
-                    gm_req_wstrb[addr_q[i*32 +: 2]]        = 1'b1;
+                    case (iu_addr[i*32 +: 2])
+                        2'd0: begin gm_req_wdata[7:0]   = iu_sdata[i*32 +: 8]; gm_req_wstrb[0] = 1'b1; end
+                        2'd1: begin gm_req_wdata[15:8]  = iu_sdata[i*32 +: 8]; gm_req_wstrb[1] = 1'b1; end
+                        2'd2: begin gm_req_wdata[23:16] = iu_sdata[i*32 +: 8]; gm_req_wstrb[2] = 1'b1; end
+                        default: begin gm_req_wdata[31:24] = iu_sdata[i*32 +: 8]; gm_req_wstrb[3] = 1'b1; end
+                    endcase
                 end
             end
         end
     end
 
-    assign gm_req_valid = (state == S_BUSY) && (|pending);
-    assign gm_req_we    = is_store;
+    assign gm_req_valid = iu_busy && (|iu_pending);
+    assign gm_req_we    = iu_store;
     assign gm_req_addr  = lead_word;
     wire   fire         = gm_req_valid && gm_req_ready;
+    wire   last_fire    = fire && ((iu_pending & ~served) == {W{1'b0}});
 
-    // ---- which lanes each outstanding load request feeds (responses are in order)
-    reg  [W-1:0]  fifo [0:W-1];
-    reg  [LB-1:0] f_wp, f_rp;
-    reg  [LB:0]   f_count;
-    wire          f_push = fire && !is_store;
-    wire          f_pop  = gm_resp_valid;
-    wire [W-1:0]  f_head = fifo[f_rp];
+    // ============================================================ in flight
+    reg  [DEPTH-1:0]    q_valid, q_issued, q_load;
+    reg  [WB-1:0]       q_warp   [0:DEPTH-1];
+    reg  [3:0]          q_rd     [0:DEPTH-1];
+    reg  [W-1:0]        q_mask   [0:DEPTH-1];
+    reg  [1:0]          q_size   [0:DEPTH-1];
+    reg  [LB:0]         q_count  [0:DEPTH-1];   // responses still to come
+    // per-lane byte offsets and results live in small per-lane memories (g_lane)
+    reg  [QB-1:0]       head, tail;
+    reg  [QB:0]         used;
 
-    wire [W-1:0] pending_next = fire ? (pending & ~served) : pending;
-    wire [LB:0]  count_next   = f_count + f_push - f_pop;
-    wire         finishing    = (state == S_BUSY) && (pending_next == {W{1'b0}}) &&
-                                (count_next == {(LB+1){1'b0}});
+    // response FIFO: which slot and lanes each outstanding load request feeds
+    reg  [QB+W-1:0]     rfifo [0:FD-1];
+    reg  [FB-2:0]       r_wp, r_rp;
+    wire [QB+W-1:0]     r_head  = rfifo[r_rp];
+    wire [QB-1:0]       r_slot  = r_head[QB+W-1:W];
+    wire [W-1:0]        r_lanes = r_head[W-1:0];
 
-    // a new instruction may start in the cycle the previous one is written back
-    assign ready = (state == S_IDLE) || (state == S_DONE && wb_ack);
+    assign ready = !iu_busy && (used != DEPTH);
+    wire accept  = start && ready;
+
+    wire h_done  = q_valid[head] && q_issued[head] && q_count[head] == 0 &&
+                   !(gm_resp_valid && r_slot == head);
+    assign wb_valid = h_done;
+    assign wb_load  = q_load[head];
+    assign wb_warp  = q_warp[head];
+    assign wb_rd    = q_rd[head];
+    assign wb_mask  = q_mask[head];
+    wire   retire   = h_done && wb_ack;
 
     always @(posedge clk) begin : p_ctrl
-        integer i;
+        integer s;
         if (rst) begin
-            state   <= S_IDLE;
-            pending <= {W{1'b0}};
-            f_wp    <= {LB{1'b0}};
-            f_rp    <= {LB{1'b0}};
-            f_count <= {(LB+1){1'b0}};
+            iu_busy  <= 1'b0;
+            q_valid  <= {DEPTH{1'b0}};
+            head     <= {QB{1'b0}};
+            tail     <= {QB{1'b0}};
+            used     <= {(QB+1){1'b0}};
+            r_wp     <= {(FB-1){1'b0}};
+            r_rp     <= {(FB-1){1'b0}};
         end else begin
-            if (state == S_BUSY) begin
-                pending <= pending_next;
-                if (finishing) state <= S_DONE;
-            end else if (state == S_DONE && wb_ack) begin
-                state <= S_IDLE;
+            // ---- accept a new instruction into the issue stage and a slot
+            if (accept) begin
+                iu_busy    <= 1'b1;
+                iu_op      <= op;
+                iu_pending <= mask;
+                iu_addr    <= addr;
+                iu_sdata   <= sdata;
+                iu_slot    <= tail;
+                q_valid[tail]  <= 1'b1;
+                q_issued[tail] <= 1'b0;
+                q_load[tail]   <= !op[2];
+                q_warp[tail]   <= warp;
+                q_rd[tail]     <= rd;
+                q_mask[tail]   <= mask;
+                q_size[tail]   <= op[1:0];
+                tail <= tail + 1'b1;
             end
-            if (start && ready) begin
-                op_q    <= op;
-                warp_q  <= warp;
-                rd_q    <= rd;
-                mask_q  <= mask;
-                addr_q  <= addr;
-                sdata_q <= sdata;
-                pending <= mask;
-                state   <= S_BUSY;
+            // ---- send requests
+            if (fire) begin
+                iu_pending <= iu_pending & ~served;
+                if (!iu_store) begin
+                    rfifo[r_wp] <= {iu_slot, served};
+                    r_wp        <= r_wp + 1'b1;
+                end
+                if (last_fire) begin
+                    iu_busy           <= 1'b0;
+                    q_issued[iu_slot] <= 1'b1;
+                end
             end
-            if (f_push) begin
-                fifo[f_wp] <= served;
-                f_wp       <= f_wp + 1'b1;
+            // ---- count responses in and out per slot
+            for (s = 0; s < DEPTH; s = s + 1) begin
+                if (accept && tail == s)
+                    q_count[s] <= {(LB+1){1'b0}};
+                else
+                    q_count[s] <= q_count[s] + (fire && !iu_store && iu_slot == s)
+                                             - (gm_resp_valid && r_slot == s);
             end
-            if (f_pop) f_rp <= f_rp + 1'b1;
-            f_count <= count_next;
+            if (gm_resp_valid) r_rp <= r_rp + 1'b1;
+            // ---- retire the oldest instruction
+            if (retire) begin
+                q_valid[head] <= 1'b0;
+                head          <= head + 1'b1;
+            end
+            used <= used + accept - retire;
         end
-        if (f_pop)
-            for (i = 0; i < W; i = i + 1)
-                if (f_head[i]) result[i*32 +: 32] <= extract(gm_resp_rdata, addr_q[i*32 +: 2], size);
     end
 
-    assign idle      = (state == S_IDLE);
-    assign wb_valid  = (state == S_DONE);
-    assign wb_load   = !is_store;
-    assign wb_warp   = warp_q;
-    assign wb_rd     = rd_q;
-    assign wb_mask   = mask_q;
-    assign wb_data   = result;
+    // ---- per lane: byte offset of each in-flight load, and its result word
+    genvar gl;
+    generate
+        for (gl = 0; gl < W; gl = gl + 1) begin : g_lane
+            reg [1:0]  off [0:DEPTH-1];
+            reg [31:0] res [0:DEPTH-1];
+            always @(posedge clk) begin
+                if (accept) off[tail] <= addr[gl*32 +: 2];
+                if (gm_resp_valid && r_lanes[gl])
+                    res[r_slot] <= extract(gm_resp_rdata, off[r_slot], q_size[r_slot]);
+            end
+            assign wb_data[gl*32 +: 32] = res[head];
+        end
+    endgenerate
+
+    assign idle      = !iu_busy && (used == 0);
     assign ev_gm_req = fire;
+
+`ifndef SYNTHESIS
+    initial begin
+        if (DEPTH < 1 || (DEPTH & (DEPTH - 1)) != 0)
+            $fatal(1, "rb_lsu: DEPTH must be a power of two");
+    end
+`endif
 endmodule
 
 `default_nettype wire

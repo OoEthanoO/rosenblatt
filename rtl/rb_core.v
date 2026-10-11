@@ -36,7 +36,9 @@ module rb_core #(
     parameter SMEM_AW     = 10,
     parameter STACK_DEPTH = 8,
     parameter MUL_WIDTH   = 32,
-    parameter ENABLE_DP4A = 1
+    parameter ENABLE_DP4A = 1,
+    parameter LSU_DEPTH   = 4,    // global memory instructions in flight per core
+    parameter PARK        = 0     // 1: a warp that finds the LSU busy sleeps until it is free
 ) (
     input  wire                       clk,
     input  wire                       rst,
@@ -69,11 +71,14 @@ module rb_core #(
 );
     localparam WB  = $clog2(NW);
     localparam LB  = $clog2(W);
-    localparam SD  = STACK_DEPTH;
-    localparam SPW = $clog2(SD + 1);
+    localparam SD  = STACK_DEPTH;      // power of two
+    localparam SDB = $clog2(SD);
+    localparam SPW = SDB + 1;          // stack pointer 0..SD
+    localparam MAXT = W * NW;          // threads per block the core can hold
     localparam RFA = WB + 4;
 
     localparam WS_DONE = 3'd0, WS_READY = 3'd1, WS_BUSY = 3'd2, WS_MEM = 3'd3, WS_BAR = 3'd4;
+    localparam WS_LSU  = 3'd5;   // parked: its global memory instruction found the LSU busy
 
     function [LB:0] popcount(input [W-1:0] m);
         integer k;
@@ -117,7 +122,7 @@ module rb_core #(
     generate
         for (gw = 0; gw < NW; gw = gw + 1) begin : g_wstate
             assign ready_vec[gw]    = wstate[gw] == WS_READY;
-            assign mem_wait_vec[gw] = wstate[gw] == WS_MEM;
+            assign mem_wait_vec[gw] = wstate[gw] == WS_MEM || wstate[gw] == WS_LSU;
             assign bar_vec[gw]      = wstate[gw] == WS_BAR;
             assign done_vec[gw]     = wstate[gw] == WS_DONE;
         end
@@ -148,7 +153,9 @@ module rb_core #(
     reg [31:0] imem [0:(1<<IMEM_AW)-1];
     reg [31:0] imem_q;
     integer ii;
+`ifndef SYNTHESIS  // simulation only: FPGA block RAM powers up as zero
     initial for (ii = 0; ii < (1 << IMEM_AW); ii = ii + 1) imem[ii] = 32'd0;
+`endif
     always @(posedge clk) begin
         if (imem_we) imem[imem_waddr] <= imem_wdata;
         imem_q <= imem[pc[pick]];
@@ -249,6 +256,20 @@ module rb_core #(
 
     wire [4:0] sr_sel = s2_imm18[4:0];
 
+    // special registers that are the same for every lane of the warp
+    reg [31:0] sr_shared;
+    always @* begin
+        case (sr_sel)
+            `RB_SR_NTID:   sr_shared = ntid;
+            `RB_SR_CTAID:  sr_shared = ctaid_q;
+            `RB_SR_NCTAID: sr_shared = nctaid;
+            `RB_SR_WARPID: sr_shared = {{(32-WB){1'b0}}, s2_warp};
+            `RB_SR_COREID: sr_shared = CORE_ID;
+            `RB_SR_CLOCK:  sr_shared = clock_cnt;
+            default:       sr_shared = (sr_sel[4:3] == 2'b01) ? args[sr_sel[2:0]*32 +: 32] : 32'd0;
+        endcase
+    end
+
     genvar gl;
     generate
         for (gl = 0; gl < W; gl = gl + 1) begin : g_lane
@@ -263,21 +284,9 @@ module rb_core #(
                 .fn(s2_op[3:0]), .a(qa), .b(s2_imm ? s2_imm18 : qb), .c(qc), .y(alu_y)
             );
             wire [31:0] tid = {{(32-WB-LB){1'b0}}, s2_warp, LANE};
-            reg  [31:0] srv;
-            always @* begin
-                case (sr_sel)
-                    `RB_SR_TID:    srv = tid;
-                    `RB_SR_NTID:   srv = ntid;
-                    `RB_SR_CTAID:  srv = ctaid_q;
-                    `RB_SR_NCTAID: srv = nctaid;
-                    `RB_SR_LANEID: srv = {{(32-LB){1'b0}}, LANE};
-                    `RB_SR_WARPID: srv = {{(32-WB){1'b0}}, s2_warp};
-                    `RB_SR_COREID: srv = CORE_ID;
-                    `RB_SR_CLOCK:  srv = clock_cnt;
-                    `RB_SR_GTID:   srv = base_q + tid;
-                    default:       srv = (sr_sel[4:3] == 2'b01) ? args[sr_sel[2:0]*32 +: 32] : 32'd0;
-                endcase
-            end
+            wire [31:0] srv = (sr_sel == `RB_SR_TID)    ? tid :
+                              (sr_sel == `RB_SR_LANEID) ? {{(32-LB){1'b0}}, LANE} :
+                              (sr_sel == `RB_SR_GTID)   ? base_q + tid : sr_shared;
             assign ex_result[gl*32 +: 32] = s2_alu ? alu_y :
                                             s2_li  ? s2_imm22 :
                                             s2_lui ? {s2_imm22[21:0], 10'd0} : srv;
@@ -313,8 +322,9 @@ module rb_core #(
     wire [SPW-1:0]     spv       = sp[s2_warp];
     wire               stk_empty = spv == {SPW{1'b0}};
     wire               stk_full  = spv == SD;
-    wire [31:0]        top_idx   = s2_warp * SD + spv - 1;
-    wire [31:0]        push_idx  = s2_warp * SD + spv;
+    wire [SDB-1:0]     top_slot  = spv[SDB-1:0] - 1'b1;
+    wire [WB+SDB-1:0]  top_idx   = {s2_warp, top_slot};
+    wire [WB+SDB-1:0]  push_idx  = {s2_warp, spv[SDB-1:0]};   // used only when not full
     wire [IMEM_AW-1:0] top_pc    = stk_pc[top_idx];
     wire [W-1:0]       pop_mask  = stk_mask[top_idx] & ~xmask[s2_warp];
 
@@ -328,13 +338,15 @@ module rb_core #(
     wire all_done    = &done_vec;
     wire bar_release = (&(bar_vec | done_vec)) && (|bar_vec);
 
-    // lane mask of warp k for a block of `ntid` threads
-    function [W-1:0] warp_lanes(input integer k);
-        integer j;
-        begin
-            for (j = 0; j < W; j = j + 1) warp_lanes[j] = (k * W + j) < ntid;
-        end
-    endfunction
+    // threads that exist in a block of `ntid` threads (thermometer code)
+    localparam TB = $clog2(MAXT) + 1;
+    localparam [TB-1:0] MAXT_C = MAXT;
+    wire [TB-1:0] ntid_c = (ntid >= MAXT) ? MAXT_C : ntid[TB-1:0];
+    reg  [MAXT-1:0] thread_exists;
+    always @* begin : p_exists
+        integer t;
+        for (t = 0; t < MAXT; t = t + 1) thread_exists[t] = t < ntid_c;
+    end
 
     // ================================================== warp state updates
     always @(posedge clk) begin : p_warps
@@ -354,12 +366,12 @@ module rb_core #(
                 base_q  <= base_tid;
                 for (w = 0; w < NW; w = w + 1) begin
                     pc[w]        <= entry;
-                    amask[w]     <= warp_lanes(w);
+                    amask[w]     <= thread_exists[w*W +: W];
                     xmask[w]     <= {W{1'b0}};
                     sp[w]        <= {SPW{1'b0}};
                     unwind[w]    <= 1'b0;
                     replaying[w] <= 1'b0;
-                    wstate[w]    <= (w * W < ntid) ? WS_READY : WS_DONE;
+                    wstate[w]    <= thread_exists[w*W] ? WS_READY : WS_DONE;
                 end
             end
         end else begin
@@ -369,14 +381,20 @@ module rb_core #(
                 if (issue && pick == w) wstate[w] <= WS_BUSY;
                 if (bar_release && wstate[w] == WS_BAR) wstate[w] <= WS_READY;
                 if (lsu_wb_take && lsu_wb_warp == w) wstate[w] <= WS_READY;
+                // parked warps retry once the LSU can take an instruction again
+                if (lsu_ready && wstate[w] == WS_LSU) wstate[w] <= WS_READY;
 
                 if (s2_valid && s2_warp == w) begin
                     unwind[w] <= 1'b0;
                     wstate[w] <= WS_READY;
                     pc[w]     <= pc_next;
                     if (is_global) begin
-                        if (g_replay) pc[w] <= s2_pc;
-                        else          wstate[w] <= WS_MEM;
+                        if (g_replay) begin
+                            pc[w]     <= s2_pc;
+                            wstate[w] <= PARK ? WS_LSU : WS_READY;   // else: spin (retry)
+                        end else begin
+                            wstate[w] <= WS_MEM;
+                        end
                     end else if (is_shared) begin
                         replaying[w] <= s_replay;
                         rmask[w]     <= smem_rest;
@@ -436,7 +454,7 @@ module rb_core #(
     end
 
     // ============================================================== LSU
-    rb_lsu #(.W(W), .WB(WB), .GMEM_AW(GMEM_AW)) u_lsu (
+    rb_lsu #(.W(W), .WB(WB), .GMEM_AW(GMEM_AW), .DEPTH(LSU_DEPTH)) u_lsu (
         .clk(clk), .rst(rst),
         .start(lsu_start), .op(s2_op), .warp(s2_warp), .rd(s2_rd), .mask(M),
         .addr(mem_addr), .sdata(st_data), .ready(lsu_ready), .idle(lsu_idle),

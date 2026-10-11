@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from ml.gpu import GpuMLP
+from ml.gpu import BatchMLP, GpuMLP
 from ml.qmlp import QuantMLP, preprocess
 from rosenblatt.device import Device, EmuBackend
 from rosenblatt.emu import Config
@@ -73,3 +73,29 @@ def test_reject_accumulator_overflow():
 def test_reject_unsupported_dp4a():
     with pytest.raises(ValueError, match="DP4A"):
         GpuMLP(Device(EmuBackend(Config(dp4a=False))), rounding_model(), dp4a=True)
+
+
+@pytest.mark.parametrize("dp4a", [True, False])
+def test_batched_tiled_network_matches_reference(dp4a):
+    model = QuantMLP.load()
+    q0 = np.random.default_rng(5).integers(0, 128, (13, 784), dtype=np.int32)
+    result = BatchMLP(Device(EmuBackend()), model, batch=13, dp4a=dp4a).run(q0)
+    np.testing.assert_array_equal(result.hidden, model.hidden(q0))
+    np.testing.assert_array_equal(result.logits, model.logits(q0))
+    np.testing.assert_array_equal(result.predictions, np.argmax(model.logits(q0), axis=1))
+
+
+def test_batched_kernel_cuts_global_memory_traffic():
+    model = QuantMLP.load()
+    q0 = np.random.default_rng(6).integers(0, 128, (16, 784), dtype=np.int32)
+    tiled = BatchMLP(Device(EmuBackend()), model, batch=16).run(q0)
+    per_image = GpuMLP(Device(EmuBackend()), model).run(q0[0])
+    tiled_reqs = sum(r.stats["gmem_reqs"] for r in tiled.runs) / 16
+    single_reqs = sum(r.stats["gmem_reqs"] for r in per_image.runs)
+    assert tiled_reqs * 5 < single_reqs   # weights are reused across the 8 images of a block
+
+
+@pytest.mark.parametrize("cfg", [Config(num_lanes=4), Config(num_warps=2)])
+def test_batched_needs_32_thread_blocks(cfg):
+    with pytest.raises(ValueError, match="32-thread"):
+        BatchMLP(Device(EmuBackend(cfg)), rounding_model(), batch=8)
