@@ -17,7 +17,7 @@ times faster on the same problem.
 | Software | ISA, assembler, emulator, runtime and 6 kernels; about 4,400 lines of Python including tests |
 | Network | 784-64-10 MLP, int8, 97.80% on the MNIST test set (float32: 97.77%) |
 | Verified | every scenario bit-exact against the emulator on 4 hardware configurations; the full network over a simulated UART |
-| Fastest kernel | 3,139 cycles per digit (batched, shared-memory tiled, DP4A): 125.6 µs at 25 MHz |
+| Baseline tiled kernel | 3,139 cycles per digit (32-image batch, 256 KiB RTL simulation, DP4A): 125.6 µs at 25 MHz |
 | FPGA | ULX3S ECP5-85F: the full design occupies 53% of the logic, with 64 KiB global memory and two supported PCB pinouts. Not yet run on a physical board |
 | RTX 5080 | the same network in 4.1 ns per digit (cuBLAS, tensor cores) |
 
@@ -172,10 +172,10 @@ on both and requires **identical outputs and identical counters**:
 - vector add, naive and tiled matrix multiply, a tree reduction;
 - the network three ways: one image at a time, batched and tiled, and the full
   trained model;
-- three hardware configurations: the default; a 1-core 4-lane build with a
+- four hardware configurations: the default; a 1-core 4-lane build with a
   16-bit multiplier, no DP4A and a one-instruction load/store queue; and a
   3-core build with slow, narrow memory, a two-instruction queue and parked
-  warps.
+  warps; and the default configuration with 32-byte global-memory lines.
 
 The UART bridge is tested at the pin level (corrupted frames, glitches, bad
 stop bits, ±1% baud error, stalled buses), and the production Python driver runs
@@ -346,12 +346,16 @@ memory next to the lanes, so the same kernel changes pay off on both.
 
 ### How much faster, and why
 
-Rosenblatt's FPGA build runs at the ULX3S's 25 MHz clock, so its best kernel
-(3,139 cycles) takes **125.6 microseconds per digit**. The RTX 5080 runs the
-*same algorithm* in 7.2 ns, **17,500 times faster**; with cuBLAS, 30,000 times.
-`bench/compare.py` takes that ratio apart:
+Converting the baseline 32-image RTL result (3,139 cycles per digit) at the
+ULX3S's 25 MHz clock gives **125.6 microseconds per digit**. This is a compute
+estimate from the 256 KiB simulation. The physical build has 64 KiB and
+streams eight-image batches, measured separately by
+[`bench/board.py`](fpga.md#benchmark-the-board); serial transfers add host
+time. The RTX 5080 runs the *same algorithm* in 7.2 ns, **17,500 times faster**
+than the estimate; with cuBLAS, 30,000 times. `bench/compare.py` takes that
+ratio apart:
 
-| | Rosenblatt (ULX3S) | RTX 5080 Laptop | Ratio |
+| | Rosenblatt (baseline RTL at 25 MHz) | RTX 5080 Laptop | Ratio |
 | --- | ---: | ---: | ---: |
 | clock | 25 MHz | 2,827 MHz | 113x |
 | lanes | 16 | 7,680 | 480x |

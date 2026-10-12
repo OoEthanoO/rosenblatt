@@ -198,6 +198,64 @@ heartbeat. Press **FIRE1** to reset the GPU; reset stays asserted until about
 2.62 ms after the button settles. A reset is required
 after any serial error (`docs/serial.md` explains why the host never retries).
 
+## Benchmark the board
+
+After a successful bring-up, close the drawing demo and run:
+
+```bash
+python bench/board.py --port COM5 --count 32 --output build/bench/my-board.json
+```
+
+This compares one image per inference with the shared-memory tiled kernel on
+the same programmed GPU and the same MNIST images. Both strategies compare
+all hidden activations and logits with NumPy. The benchmark replaces the
+device's model and scratch buffers; it leaves the bitstream running.
+
+The tiled runtime selects the largest group of eight that fits the device's
+remaining global memory. On the 64 KiB 85F build, the trained model and its
+padded biases occupy 52,608 bytes. Eight input/output slots add 7,808 bytes,
+for **60,416 bytes total**. A 32-image run therefore reuses one eight-image
+buffer four times, with the weights uploaded once for each strategy.
+
+`BatchMLP(device, model)` selects this capacity automatically;
+`gpu.run_batches(inputs)` yields one result per chunk.
+The full input is validated before the first inference write. In the
+benchmark, each result is checked before the next chunk starts.
+
+Options:
+
+- Omit `--port` to check the same workload on a 64 KiB emulator.
+- `--start 100 --count 33` selects a different range and exercises a partial
+  final tile. Each tile executes eight slots, so this run executes 40 slots
+  but reports throughput per **33 real images**. Padding is zeroed; padded
+  predictions are discarded. Choose a multiple of eight for steady batches.
+- `--scalar` disables DP4A in both strategies.
+- `--batch 8` sets the tiled capacity explicitly. Values round up to a
+  multiple of eight; a capacity that does not fit fails before the tiled
+  model is uploaded.
+- `--baudrate` must match the loaded image. `--clock-hz` defaults to
+  25,000,000 and is used only to convert GPU counters to seconds; it does
+  not measure or change the board's clock.
+
+The report separates three timings: model setup, host inference, and NumPy
+verification. **GPU cycles** come from the device's counters and exclude
+serial transfers. **Host inference time** includes input/program uploads,
+launches, polling, counter reads, and output downloads. At 115,200 baud,
+serial transfers can dominate the time you wait even when a kernel is fast.
+The emulator records event counts and wall time, with GPU timing left null.
+
+JSON reports include the device configuration, model/input/source checksums,
+per-launch counters, actual and padded image counts, and predictions. The
+default destination is `build/bench/board-latest.json`. An error or Ctrl+C
+saves a failed or interrupted report, including completed chunks, and
+replaces any previous success at that path. A mismatch reports the image
+and neuron index; press FIRE1 before restarting after a serial failure.
+
+The older profiling study in `bench/results/` used 256 KiB and 32 images per
+tiled launch. Its 3,139 cycles per image is a simulation result for that
+workload. Use this benchmark for the 64 KiB board's eight-image launches and
+keep compute time separate from host time when comparing results.
+
 ## If it does not work
 
 | Symptom | Likely cause |

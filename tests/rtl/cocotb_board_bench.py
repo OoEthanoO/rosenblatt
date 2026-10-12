@@ -26,7 +26,8 @@ def compare_benchmarks(pins):
     expected = run_benchmark(Device(EmuBackend(cfg)), model, inputs, labels)
     with UartBackend(stream=BlockingSerial(pins), timeout=180, kernel_timeout=180) as backend:
         assert backend.cfg == cfg
-        actual = run_benchmark(Device(backend), model, inputs, labels, clock_hz=25_000_000)
+        actual = run_benchmark(Device(backend), model, inputs, labels, clock_hz=25_000_000,
+                               progress=lambda message: print(message, flush=True))
     assert actual["config"] == expected["config"]
     for ref, got in zip(expected["strategies"], actual["strategies"]):
         assert got["verified_images"] == got["correct"] == 9

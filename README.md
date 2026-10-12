@@ -74,9 +74,25 @@ revision before programming; the [FPGA guide](docs/fpga.md) covers US1,
 Windows drivers, reset, and the first hardware test. `--doctor` checks the
 software and bitstream without opening any USB or serial device.
 
+After bring-up, compare single-image inference with batches sized for the
+board's memory:
+
+```powershell
+.\.venv\Scripts\python.exe bench/board.py --port COM5 --count 32
+.\.venv\Scripts\python.exe bench/board.py --count 32          # emulator check before the board arrives
+```
+
+The tiled path streams eight images at a time through 64 KiB. Both paths
+verify every hidden activation and output score and save a JSON report in
+`build/bench/board-latest.json`. Hardware counters measure GPU compute;
+host time includes serial transfers. The emulator reports no GPU timing.
+See [the benchmark guide](docs/fpga.md#benchmark-the-board) for options and
+how to interpret partial batches.
+
 ## Results
 
-Cycle-accurate simulation of the default GPU, real MNIST test images:
+Cycle-accurate simulation of the default GPU with 256 KiB of global memory,
+using real MNIST test images (32 images per tiled batch):
 
 | Strategy | Cycles per digit | Global memory requests per digit |
 | --- | ---: | ---: |
@@ -98,9 +114,11 @@ output score identical to the reference:
 | shared-memory tiles + DP4A | 7.2 |
 | cuBLAS int8 (tensor cores) | 4.1 |
 
-At 25 MHz on the FPGA, Rosenblatt's best kernel takes 125.6 microseconds per
-digit, 17,500 times slower than the RTX 5080 running the same algorithm. The
-write-up breaks that ratio down: 113x clock, 480x lanes, and utilization
+At the FPGA's 25 MHz clock, the simulated 3,139 cycles correspond to 125.6
+microseconds per digit, 17,500 times slower than the RTX 5080 running the same
+algorithm. This estimate excludes serial transfers and uses a larger batch
+than fits the 64 KiB board; `bench/board.py` measures the board-sized workload.
+The write-up breaks down the estimate: 113x clock, 480x lanes, and utilization
 working in the other direction.
 
 ## Verification
