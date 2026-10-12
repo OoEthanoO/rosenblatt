@@ -34,7 +34,8 @@ module rb_gpu #(
     parameter GMEM_INTERVAL = 1,
     parameter LSU_DEPTH     = 4,
     parameter PARK          = 0,
-    parameter GMEM_LINE     = 4     // bytes per global-memory request: 4, 8, 16 or 32
+    parameter GMEM_LINE     = 4,    // bytes per global-memory request: 4, 8, 16 or 32
+    parameter SCOREBOARD    = 0     // 1: a global load stalls only the instructions using its register
 ) (
     input  wire        clk,
     input  wire        rst,
@@ -56,7 +57,8 @@ module rb_gpu #(
     localparam [7:0] P_CORES = NUM_CORES,  P_WARPS = NUM_WARPS, P_LANES = NUM_LANES;
     localparam [7:0] P_SMEM  = SMEM_AW,    P_GMEM  = GMEM_AW,   P_IMEM  = IMEM_AW;
     localparam [7:0] P_MULW  = MUL_WIDTH,  P_STACK = STACK_DEPTH, P_LAT = GMEM_LATENCY;
-    localparam [7:0] P_FEAT  = ENABLE_DP4A ? `RB_FEATURE_DP4A : 8'd0;
+    localparam [7:0] P_FEAT  = (ENABLE_DP4A ? `RB_FEATURE_DP4A : 8'd0) |
+                               (SCOREBOARD ? `RB_FEATURE_SCOREBOARD : 8'd0);
     localparam [7:0] P_LSUD  = LSU_DEPTH,  P_INTV  = GMEM_INTERVAL, P_PARK = PARK;
     localparam [7:0] P_LINE  = GMEM_LINE;
     localparam LWB  = $clog2(GMEM_LINE / 4);   // word-in-line bits
@@ -230,7 +232,7 @@ module rb_gpu #(
                 .CORE_ID(gc), .W(NUM_LANES), .NW(NUM_WARPS), .IMEM_AW(IMEM_AW),
                 .GMEM_AW(GMEM_AW), .GMEM_LINE(GMEM_LINE), .SMEM_AW(SMEM_AW), .STACK_DEPTH(STACK_DEPTH),
                 .MUL_WIDTH(MUL_WIDTH), .ENABLE_DP4A(ENABLE_DP4A),
-                .LSU_DEPTH(LSU_DEPTH), .PARK(PARK)
+                .LSU_DEPTH(LSU_DEPTH), .PARK(PARK), .SCOREBOARD(SCOREBOARD)
             ) u_core (
                 .clk(clk), .rst(rst),
                 .imem_we(imem_we), .imem_waddr(host_addr[IMEM_AW-1:0]), .imem_wdata(host_wdata),
@@ -251,7 +253,8 @@ module rb_gpu #(
     assign gm_we[HP]                       = host_we;
     assign gm_addr[HP*LAW +: LAW]          = host_addr[GMEM_AW-1:LWB];
     assign gm_wdata[HP*LBITS +: LBITS]     = {(GMEM_LINE/4){host_wdata}};
-    assign gm_wstrb[HP*GMEM_LINE +: GMEM_LINE] = {{(GMEM_LINE-4){1'b0}}, 4'hF} << (host_word * 4);
+    wire [GMEM_LINE-1:0] host_strb = 4'hF;   // zero-extended to the line
+    assign gm_wstrb[HP*GMEM_LINE +: GMEM_LINE] = host_strb << (host_word * 4);
 
     rb_gmem #(.NP(NP), .AW(GMEM_AW), .LINE(GMEM_LINE), .LATENCY(GMEM_LATENCY),
               .INTERVAL(GMEM_INTERVAL)) u_gmem (

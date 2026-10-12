@@ -120,7 +120,7 @@ def run_scenarios(dut, cfg: Config, names: list[str], seeds: list[int]) -> list[
     hw = rtl.backend.read_config()
     for field in ("num_cores", "num_lanes", "num_warps", "imem_words", "gmem_bytes", "smem_bytes",
                   "stack_depth", "mul_width", "dp4a", "gmem_latency", "gmem_interval", "lsu_depth", "park",
-                  "gmem_line_bytes"):
+                  "gmem_line_bytes", "scoreboard"):
         assert getattr(hw, field) == getattr(cfg, field), f"HWCFG {field}: {getattr(hw, field)} != {getattr(cfg, field)}"
     errors: list[str] = []
     for name in names:

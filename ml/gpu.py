@@ -96,10 +96,13 @@ class GpuMLP:
     layout="interleaved" stores the weights word column by word column
     (interleave_words), so the lanes of a warp read neighbouring words; it
     needs DP4A and pays off on a device with wide memory lines.
+    unroll=2 (needs DP4A) handles two words per loop iteration and pads the
+    layer widths to 8 bytes: fewer instructions, and on a device with a
+    register scoreboard more loads in flight per warp.
     """
 
     def __init__(self, device: Device, model: QuantMLP, *, dp4a: bool | None = None,
-                 layout: str = "rows"):
+                 layout: str = "rows", unroll: int = 1):
         self.device = device
         self.dp4a = device.cfg.dp4a if dp4a is None else dp4a
         if self.dp4a and not device.cfg.dp4a:
@@ -107,19 +110,23 @@ class GpuMLP:
         _check_layout(layout)
         if layout == "interleaved" and not self.dp4a:
             raise ValueError("the interleaved weight layout needs DP4A")
-        self.layout = layout
+        if unroll not in (1, 2) or (unroll == 2 and not self.dp4a):
+            raise ValueError("unroll must be 1, or 2 with DP4A")
+        self.layout, self.unroll = layout, unroll
         w1, b1, w2, b2, self.shift = _validate_model(model)
         self.n_hidden, self.n_input = w1.shape
         self.n_output = w2.shape[0]
 
-        self.input_width = (self.n_input + 3) // 4 * 4
-        self.hidden_width = (self.n_hidden + 3) // 4 * 4
+        pad = 4 * unroll
+        self.input_width = (self.n_input + pad - 1) // pad * pad
+        self.hidden_width = (self.n_hidden + pad - 1) // pad * pad
         if device.cfg.mul_width == 16 and max(
             self.input_width, self.hidden_width, self.n_hidden - 1, self.n_output - 1
         ) >= 32768:
             raise ValueError("layer dimensions exceed the 16-bit multiplier's address arithmetic")
 
-        defines = {"DP4A": int(self.dp4a), "INTERLEAVED": int(layout == "interleaved")}
+        defines = {"DP4A": int(self.dp4a), "INTERLEAVED": int(layout == "interleaved"),
+                   "UNROLL": unroll}
         hidden_program = assemble_file(str(KERNEL), defines={**defines, "REQUANTIZE": 1})
         output_program = assemble_file(str(KERNEL), base=hidden_program.end,
                                        defines={**defines, "REQUANTIZE": 0})

@@ -108,10 +108,10 @@ lineN: one request moves an N-byte line (default 4); rows: weights row-major (de
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | per_image_dp4a | 17,796 | 11,471 | 14,404 | 0.33 | 81% | 24% | 14,736 | 4/4 |
 | interleaved_per_image | 17,803 | 11,481 | 14,404 | 0.33 | 81% | 24% | 14,736 | 4/4 |
-| line16_rows_per_image | 17,736 | 11,471 | 14,334 | 0.33 | 81% | 24% | 14,654 | 4/4 |
-| line16_interleaved_per_image | 10,319 | 11,481 | 4,814 | 0.58 | 47% | 38% | 810 | 4/4 |
-| line32_rows_per_image | 17,726 | 11,471 | 14,324 | 0.33 | 81% | 24% | 14,638 | 4/4 |
-| line32_interleaved_per_image | 9,349 | 11,481 | 3,220 | 0.64 | 34% | 35% | 23 | 4/4 |
+| line16_rows_per_image | 17,746 | 11,471 | 14,349 | 0.33 | 81% | 24% | 14,654 | 4/4 |
+| line16_interleaved_per_image | 10,326 | 11,481 | 4,829 | 0.58 | 47% | 38% | 810 | 4/4 |
+| line32_rows_per_image | 17,737 | 11,471 | 14,340 | 0.33 | 81% | 24% | 14,638 | 4/4 |
+| line32_interleaved_per_image | 9,354 | 11,481 | 3,236 | 0.64 | 35% | 35% | 25 | 4/4 |
 
 ## Memory line size and weight layout (tiled)
 
@@ -121,7 +121,42 @@ lineN: one request moves an N-byte line (default 4); rows: weights row-major (de
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | tiled_dp4a | 3,139 | 4,108 | 2,100 | 0.65 | 67% | 14% | 870 | 32/32 |
 | interleaved_tiled | 3,139 | 4,108 | 2,100 | 0.65 | 67% | 14% | 870 | 32/32 |
-| line16_rows_tiled | 2,839 | 4,108 | 1,753 | 0.72 | 62% | 12% | 518 | 32/32 |
-| line16_interleaved_tiled | 2,546 | 4,108 | 529 | 0.81 | 21% | 11% | 174 | 32/32 |
-| line32_rows_tiled | 2,835 | 4,108 | 1,748 | 0.72 | 62% | 12% | 510 | 32/32 |
-| line32_interleaved_tiled | 2,510 | 4,108 | 320 | 0.82 | 13% | 11% | 102 | 32/32 |
+| line16_rows_tiled | 2,864 | 4,108 | 1,785 | 0.72 | 62% | 12% | 564 | 32/32 |
+| line16_interleaved_tiled | 2,571 | 4,108 | 561 | 0.80 | 22% | 11% | 220 | 32/32 |
+| line32_rows_tiled | 2,864 | 4,108 | 1,784 | 0.72 | 62% | 12% | 564 | 32/32 |
+| line32_interleaved_tiled | 2,539 | 4,108 | 356 | 0.81 | 14% | 11% | 156 | 32/32 |
+
+## Register scoreboard (per_image)
+
+scoreboard: a global load stalls only the instructions that use its register, not the whole warp. line32 rows use interleaved weights.
+
+| Experiment | cycles / image | warp instructions / image | global requests / image | IPC per core | memory port busy | issue slots lost to memory waits | replays / image | correct |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| per_image_dp4a | 17,796 | 11,471 | 14,404 | 0.33 | 81% | 24% | 14,736 | 4/4 |
+| scoreboard_per_image | 15,804 | 11,471 | 14,404 | 0.37 | 91% | 6% | 17,397 | 4/4 |
+| line32_interleaved_per_image | 9,354 | 11,481 | 3,236 | 0.64 | 35% | 35% | 25 | 4/4 |
+| scoreboard_line32_per_image | 7,989 | 11,481 | 3,236 | 0.75 | 41% | 14% | 1,629 | 4/4 |
+
+## Register scoreboard (tiled)
+
+scoreboard: a global load stalls only the instructions that use its register, not the whole warp. line32 rows use interleaved weights.
+
+| Experiment | cycles / image | warp instructions / image | global requests / image | IPC per core | memory port busy | issue slots lost to memory waits | replays / image | correct |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| tiled_dp4a | 3,139 | 4,108 | 2,100 | 0.65 | 67% | 14% | 870 | 32/32 |
+| scoreboard_tiled | 3,056 | 4,108 | 2,100 | 0.67 | 69% | 11% | 1,012 | 32/32 |
+| line32_interleaved_tiled | 2,539 | 4,108 | 356 | 0.81 | 14% | 11% | 156 | 32/32 |
+| scoreboard_line32_tiled | 2,385 | 4,108 | 356 | 0.86 | 15% | 2% | 412 | 32/32 |
+
+## One bottleneck after another (per_image)
+
+Each row adds one change to the row above: 32-byte lines with interleaved weights, the register scoreboard, the loop unrolled by two, an 8-instruction LSU queue.
+
+| Experiment | cycles / image | warp instructions / image | global requests / image | IPC per core | memory port busy | issue slots lost to memory waits | replays / image | correct |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| per_image_dp4a | 17,796 | 11,471 | 14,404 | 0.33 | 81% | 24% | 14,736 | 4/4 |
+| line32_interleaved_per_image | 9,354 | 11,481 | 3,236 | 0.64 | 35% | 35% | 25 | 4/4 |
+| scoreboard_line32_per_image | 7,989 | 11,481 | 3,236 | 0.75 | 41% | 14% | 1,629 | 4/4 |
+| unroll2_scoreboard_line32_per_image | 7,318 | 9,101 | 3,236 | 0.64 | 44% | 2% | 3,065 | 4/4 |
+| lsu8_unroll2_scoreboard_line32_per_image | 6,057 | 9,101 | 3,236 | 0.78 | 53% | 0% | 844 | 4/4 |
+

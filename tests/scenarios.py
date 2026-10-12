@@ -146,6 +146,86 @@ def alu_random(dev: Device, seed: int, n_ops: int = 200) -> Outcome:
     return Outcome({"regs": out[:, 2:]}, [run])
 
 
+def load_use_random(dev: Device, seed: int, n_ops: int = 160) -> Outcome:
+    """Random mixes of global loads and the instructions that use them.
+
+    Loaded registers are used at random distances: as ALU operands (including
+    the accumulator of mad/dp4a), as store data, as the address of another load
+    (pointer chasing), as branch conditions, and overwritten before or after
+    their data arrives. Lanes read different words, so branches diverge. With
+    the register scoreboard this is its stress test; with blocking loads it runs
+    the same program the slow way. Some loads are still in flight at `bar` and
+    at `ret`.
+    """
+    rng = np.random.default_rng(seed)
+    cfg = dev.cfg
+    nthreads = cfg.num_lanes * cfg.num_warps            # one full block
+    data = dev.upload(rng.integers(0, 2**32, 64, dtype=np.uint64).astype(np.uint32))
+    pointers = dev.upload((data + 4 * rng.integers(0, 64, 64)).astype(np.uint32))
+    out = zeros(dev, 2 * nthreads * 128)                # 32 words per thread, 2 blocks
+
+    # r1: this lane's window into the data, r13: into the pointers, r14: its
+    # output slot. Random code reads and writes r2..r12 only.
+    src = ["s2r r2, %gtid", "andi r3, r2, 15", "shli r3, r3, 2",
+           "s2r r1, %arg0", "add r1, r1, r3", "s2r r13, %arg1", "add r13, r13, r3",
+           "shli r2, r2, 7", "s2r r14, %arg2", "add r14, r14, r2"]
+    src += [f"ldw r{r}, [r1 + {4 * r}]" for r in range(2, 13)]
+    fns = ["add", "sub", "xor", "and", "or", "mul", "mad", "shl", "sra", "slt", "min"]
+    fns += ["dp4a"] if cfg.dp4a else []
+
+    def reg() -> int:
+        return int(rng.integers(2, 13))
+
+    def simple(out_lines: list[str], allow_load: bool = True) -> None:
+        kind = rng.random()
+        if kind < 0.4 and allow_load:
+            if rng.random() < 0.85:
+                out_lines.append(f"ldw r{reg()}, [r1 + {4 * int(rng.integers(0, 48))}]")
+            else:
+                op = "ldb" if rng.random() < 0.5 else "ldbu"
+                out_lines.append(f"{op} r{reg()}, [r1 + {int(rng.integers(0, 192))}]")
+        elif kind < 0.85:
+            fn = fns[int(rng.integers(len(fns)))]
+            out_lines.append(f"{fn} r{reg()}, r{reg()}, r{reg()}")
+        else:
+            out_lines.append(f"stw [r14 + {4 * int(rng.integers(0, 16))}], r{reg()}")
+
+    for _ in range(n_ops):
+        kind = rng.random()
+        if kind < 0.6:
+            simple(src)
+        elif kind < 0.72:                               # pointer chase, maybe with a gap
+            ptr, dst = reg(), reg()
+            src.append(f"ldw r{ptr}, [r13 + {4 * int(rng.integers(0, 48))}]")
+            for _ in range(int(rng.integers(0, 3))):
+                fn = fns[int(rng.integers(len(fns)))]
+                tgt = reg()
+                while tgt == ptr:
+                    tgt = reg()
+                src.append(f"{fn} r{tgt}, r{reg()}, r{reg()}")
+            src.append(f"ldw r{dst}, [r{ptr}]")
+        elif kind < 0.8:                                # same register loaded twice in a row
+            r = reg()
+            src += [f"ldw r{r}, [r1 + {4 * int(rng.integers(0, 48))}]",
+                    f"ldw r{r}, [r1 + {4 * int(rng.integers(0, 48))}]"]
+        elif kind < 0.95:                               # branch on a (maybe still loading) value
+            src.append(f"if.nz r{reg()}")
+            for _ in range(int(rng.integers(1, 4))):
+                simple(src)
+            if rng.random() < 0.4:
+                src.append("else")
+                simple(src)
+            src.append("endif")
+        else:
+            src.append("bar")
+    src += [f"stw [r14 + {64 + 4 * (r - 2)}], r{r}" for r in range(2, 13)]
+    src += ["ldw r12, [r1]", "ret"]                     # still in flight at ret
+    dev.load(assemble("\n".join(src)))
+    run = dev.launch(grid=2, block=nthreads, args=[data, pointers, out])
+    words = dev.download(out, 2 * nthreads * 32, np.uint32).reshape(2 * nthreads, 32)
+    return Outcome({"words": words}, [run])
+
+
 # ---------------------------------------------------- random divergence stress
 
 
@@ -432,7 +512,7 @@ def matmul_tiled(dev: Device, seed: int) -> Outcome:
 
 def mlp_int8(dev: Device, seed: int) -> Outcome:
     """Two dense layers, padding, partial warps, and reusable device buffers;
-    both weight layouts when the device has DP4A."""
+    both weight layouts and the unrolled loop when the device has DP4A."""
     from ml.gpu import GpuMLP
     from ml.qmlp import QuantMLP
 
@@ -446,6 +526,8 @@ def mlp_int8(dev: Device, seed: int) -> Outcome:
     gpus = {"": GpuMLP(dev, model)}
     if dev.cfg.dp4a:
         gpus["il_"] = GpuMLP(dev, model, layout="interleaved")
+        gpus["u2_"] = GpuMLP(dev, model, unroll=2)
+        gpus["il_u2_"] = GpuMLP(dev, model, layout="interleaved", unroll=2)
     outcome = Outcome()
     for i, q0 in enumerate((np.zeros(7, dtype=np.int32), rng.integers(0, 128, 7, dtype=np.int32))):
         for tag, gpu in gpus.items():
@@ -510,6 +592,7 @@ SCENARIOS = {
     "matmul_naive": matmul_naive,
     "special_regs": special_regs,
     "alu_random": alu_random,
+    "load_use_random": load_use_random,
     "divergence_random": divergence_random,
     "memory_patterns": memory_patterns,
     "reduce_sum": reduce_sum,

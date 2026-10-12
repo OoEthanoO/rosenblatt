@@ -12,6 +12,10 @@
 //              chosen lane rides along on the same request. With 4-byte lines,
 //              8 lanes reading 8 consecutive bytes cost 2 requests; 8 lanes
 //              reading one address (broadcast) cost 1; 8 scattered bytes cost 8.
+//              Stores coalesce only within one 32-bit word, whatever LINE is:
+//              letting any lane write any byte of a wide line doubled the size
+//              of the unit at 32-byte lines, and stores are a small share of
+//              the traffic in the kernels this GPU runs.
 //   in flight  up to DEPTH instructions whose requests are all sent wait here
 //              for their responses. The issue stage is free for the next
 //              instruction as soon as the last request of the previous one is
@@ -66,6 +70,7 @@ module rb_lsu #(
     localparam LWB = $clog2(LINE / 4);    // word-in-line bits
     localparam LAW = GMEM_AW - LWB;       // line-address bits
     localparam OB  = 2 + LWB;             // byte-in-line bits
+    localparam LWB1 = (LWB > 0) ? LWB : 1;
     localparam QB = (DEPTH > 1) ? $clog2(DEPTH) : 1;   // slot index bits
     localparam FD = DEPTH * W;                         // response FIFO depth
     localparam FB = $clog2(FD) + 1;
@@ -105,35 +110,43 @@ module rb_lsu #(
     wire [1:0] iu_size  = iu_op[1:0];   // 00 word, 01 signed byte, 10 unsigned byte
 
     // the lowest waiting lane leads the next request (constant-index loops only)
-    reg [LAW-1:0] lead_line;
+    reg [GMEM_AW-1:0] lead_word;
     always @* begin : p_lead
         integer i;
-        lead_line = {LAW{1'b0}};
+        lead_word = {GMEM_AW{1'b0}};
         for (i = W - 1; i >= 0; i = i - 1)
-            if (iu_pending[i]) lead_line = iu_addr[i*32+OB +: LAW];
+            if (iu_pending[i]) lead_word = iu_addr[i*32+2 +: GMEM_AW];
     end
+    wire [LAW-1:0]  lead_line = lead_word[GMEM_AW-1:LWB];
+    wire [LWB1-1:0] lead_slot = (LWB > 0) ? lead_word[LWB1-1:0] : {LWB1{1'b0}};   // word in line
 
-    reg [W-1:0] served;   // lanes served by this request
+    // lanes served by this request: loads, the leader's line; stores, its word
+    reg [W-1:0] served;
     always @* begin : p_cover
         integer i;
         for (i = 0; i < W; i = i + 1)
-            served[i] = iu_pending[i] && (iu_addr[i*32+OB +: LAW] == lead_line);
+            served[i] = iu_pending[i] && (iu_store ? iu_addr[i*32+2 +: GMEM_AW] == lead_word
+                                                   : iu_addr[i*32+OB +: LAW] == lead_line);
     end
 
-    // merge the store data of all served lanes into one line, byte by byte
-    // (ascending lane order: the highest lane wins)
+    // merge the store data of all served lanes into one word, byte by byte
+    // (ascending lane order: the highest lane wins), then place it in the line
+    reg  [31:0]     st_word;
+    reg  [3:0]      st_strb;
+    wire [LINE-1:0] st_strb_line = st_strb;   // zero-extended
     always @* begin : p_merge
         integer i, b;
-        gm_req_wdata = {LINE*8{1'b0}};
-        gm_req_wstrb = {LINE{1'b0}};
-        for (b = 0; b < LINE; b = b + 1)
+        st_word = 32'd0;
+        st_strb = 4'd0;
+        for (b = 0; b < 4; b = b + 1)
             for (i = 0; i < W; i = i + 1)
-                if (served[i] && (iu_size == 2'b00 ? (iu_addr[i*32 +: OB] >> 2) == (b >> 2)
-                                                   : iu_addr[i*32 +: OB] == b)) begin
-                    gm_req_wdata[b*8 +: 8] = (iu_size == 2'b00) ? iu_sdata[i*32 + (b % 4) * 8 +: 8]
-                                                                : iu_sdata[i*32 +: 8];
-                    gm_req_wstrb[b]        = 1'b1;
+                if (served[i] && (iu_size == 2'b00 || iu_addr[i*32 +: 2] == b)) begin
+                    st_word[b*8 +: 8] = (iu_size == 2'b00) ? iu_sdata[i*32 + b*8 +: 8]
+                                                           : iu_sdata[i*32 +: 8];
+                    st_strb[b]        = 1'b1;
                 end
+        gm_req_wdata = {(LINE / 4){st_word}};
+        gm_req_wstrb = st_strb_line << (lead_slot * 4);
     end
 
     assign gm_req_valid = iu_busy && (|iu_pending);

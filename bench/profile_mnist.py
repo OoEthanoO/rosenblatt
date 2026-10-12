@@ -34,7 +34,7 @@ PER_IMAGE_COUNT = 4   # the per-image kernels cost the same for every image
 TILED_COUNT = 32      # 4 groups of 8 images x 2 neuron groups = 8 blocks
 
 
-Spec = tuple[dict, str, bool, int, str]   # Config overrides, workload, dp4a, images, weight layout
+Spec = tuple   # (Config overrides, workload, dp4a, images, weight layout[, loop unroll])
 
 
 def experiments() -> dict[str, Spec]:
@@ -66,17 +66,34 @@ def experiments() -> dict[str, Spec]:
         for line in (16, 32):
             for layout in ("rows", "interleaved"):
                 exp[f"line{line}_{layout}_{workload}"] = ({"gmem_line_bytes": line}, workload, True, n, layout)
+    # 8. a register scoreboard: a global load stalls only the instructions that
+    #    use its register, so one warp can have several loads in flight
+    for workload, n in (("per_image", PER_IMAGE_COUNT), ("tiled", TILED_COUNT)):
+        exp[f"scoreboard_{workload}"] = ({"scoreboard": True}, workload, True, n, "rows")
+        exp[f"scoreboard_line32_{workload}"] = ({"scoreboard": True, "gmem_line_bytes": 32},
+                                                workload, True, n, "interleaved")
+    # 9. the one-image loop unrolled by two: fewer instructions, and with the
+    #    scoreboard four loads of one warp in flight
+    exp["unroll2_line32_per_image"] = ({"gmem_line_bytes": 32}, "per_image", True, PER_IMAGE_COUNT,
+                                       "interleaved", 2)
+    exp["unroll2_scoreboard_line32_per_image"] = ({"scoreboard": True, "gmem_line_bytes": 32},
+                                                  "per_image", True, PER_IMAGE_COUNT, "interleaved", 2)
+    # ...which then waits for the load/store unit's four-instruction queue
+    exp["lsu8_unroll2_scoreboard_line32_per_image"] = (
+        {"scoreboard": True, "gmem_line_bytes": 32, "lsu_depth": 8},
+        "per_image", True, PER_IMAGE_COUNT, "interleaved", 2)
     return exp
 
 
 def run_one(name: str, spec: Spec) -> dict:
-    overrides, workload, dp4a, count, layout = spec
+    overrides, workload, dp4a, count, layout, *rest = spec
+    unroll = rest[0] if rest else 1
     cfg = replace(Config(), **overrides)
     out = RESULTS / f"{name}.json"
     out.unlink(missing_ok=True)
     simrun.run(cfg, "cocotb_bench", {
         "RB_WORKLOAD": workload, "RB_DP4A": "1" if dp4a else "0", "RB_COUNT": str(count),
-        "RB_LAYOUT": layout, "RB_OUT": str(out),
+        "RB_LAYOUT": layout, "RB_UNROLL": str(unroll), "RB_OUT": str(out),
     }, build_tag=name)
     if not out.exists():
         raise RuntimeError(f"{name}: simulation produced no result (see build/sim/*_{name})")
@@ -91,8 +108,9 @@ def main() -> int:
     p.add_argument("--list", action="store_true")
     a = p.parse_args()
     if a.list:
-        for k, (ov, w, d, n, layout) in exp.items():
-            print(f"{k:28s} {w:9s} dp4a={d!s:5} images={n:2d} {layout:11s} {ov}")
+        for k, (ov, w, d, n, layout, *rest) in exp.items():
+            print(f"{k:36s} {w:9s} dp4a={d!s:5} images={n:2d} {layout:11s} "
+                  f"unroll={rest[0] if rest else 1} {ov}")
         return 0
     names = a.only or list(exp)
     unknown = [n for n in names if n not in exp]
@@ -107,11 +125,11 @@ def main() -> int:
             n = futures[fut]
             try:
                 r = fut.result()
-                print(f"[{time.time() - start:6.0f}s] {n:28s} {r['cycles'] / r['count']:9.0f} cycles/image  "
+                print(f"[{time.time() - start:6.0f}s] {n:36s} {r['cycles'] / r['count']:9.0f} cycles/image  "
                       f"{r['correct']}/{r['count']} correct", flush=True)
             except Exception as e:  # keep going; report at the end
                 failures.append(n)
-                print(f"[{time.time() - start:6.0f}s] {n:28s} FAILED: {e}", flush=True)
+                print(f"[{time.time() - start:6.0f}s] {n:36s} FAILED: {e}", flush=True)
     if failures:
         print("failed:", " ".join(failures))
         return 1

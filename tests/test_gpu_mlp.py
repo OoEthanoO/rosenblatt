@@ -116,6 +116,22 @@ def test_reject_bad_layouts():
         GpuMLP(Device(EmuBackend()), rounding_model(), layout="columns")
     with pytest.raises(ValueError, match="layout"):
         BatchMLP(Device(EmuBackend()), rounding_model(), batch=8, layout="columns")
+    with pytest.raises(ValueError, match="unroll"):
+        GpuMLP(Device(EmuBackend()), rounding_model(), unroll=3)
+    with pytest.raises(ValueError, match="unroll"):
+        GpuMLP(Device(EmuBackend()), rounding_model(), dp4a=False, unroll=2)
+
+
+@pytest.mark.parametrize("layout", LAYOUTS)
+def test_unrolled_loop_matches_and_saves_instructions(layout):
+    model = QuantMLP.load()
+    q0 = np.random.default_rng(9).integers(0, 128, model.w1.shape[1], dtype=np.int32)
+    plain, unrolled = (GpuMLP(Device(EmuBackend()), model, layout=layout, unroll=u).run(q0) for u in (1, 2))
+    for result in (plain, unrolled):
+        np.testing.assert_array_equal(result.hidden, model.hidden(q0))
+        np.testing.assert_array_equal(result.logits, model.logits(q0))
+    count = lambda r: sum(run.stats["instructions"] for run in r.runs)  # noqa: E731
+    assert count(unrolled) < 0.85 * count(plain)
 
 
 def test_wide_lines_pay_off_only_with_the_interleaved_layout():

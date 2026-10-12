@@ -19,6 +19,13 @@
 // global memory the others keep going. That is latency hiding, the central
 // idea of GPU throughput.
 //
+// Global loads: by default a warp that issues one waits until its data is
+// written back. With SCOREBOARD = 1 it keeps going: the load marks its
+// destination register as pending, and only an instruction that reads or
+// writes a pending register waits (it is dropped in S1, and the warp sleeps
+// until those registers arrive). One warp can then have several loads in
+// flight. Stores never stall the warp in that mode.
+//
 // Divergence: when the threads of a warp disagree on a branch, the warp runs
 // the fall-through threads first and pushes {target, taken threads} on a
 // per-warp stack. `ssy` pushes a reconvergence point and `sync` pops the stack
@@ -39,7 +46,8 @@ module rb_core #(
     parameter MUL_WIDTH   = 32,
     parameter ENABLE_DP4A = 1,
     parameter LSU_DEPTH   = 4,    // global memory instructions in flight per core
-    parameter PARK        = 0     // 1: a warp that finds the LSU busy sleeps until it is free
+    parameter PARK        = 0,    // 1: a warp that finds the LSU busy sleeps until it is free
+    parameter SCOREBOARD  = 0     // 1: a global load stalls only the instructions that use its register
 ) (
     input  wire                       clk,
     input  wire                       rst,
@@ -80,6 +88,7 @@ module rb_core #(
 
     localparam WS_DONE = 3'd0, WS_READY = 3'd1, WS_BUSY = 3'd2, WS_MEM = 3'd3, WS_BAR = 3'd4;
     localparam WS_LSU  = 3'd5;   // parked: its global memory instruction found the LSU busy
+    localparam WS_DEP  = 3'd6;   // scoreboard: waits for registers that loads have not filled yet
 
     function [LB:0] popcount(input [W-1:0] m);
         integer k;
@@ -106,6 +115,10 @@ module rb_core #(
     reg  [IMEM_AW-1:0]  stk_pc   [0:NW*SD-1];
     reg  [W-1:0]        stk_mask [0:NW*SD-1];
 
+    // scoreboard (SCOREBOARD = 1): registers of each warp that a load will still write
+    reg  [15:0]         pend     [0:NW-1];
+    reg  [15:0]         dep_need [0:NW-1];  // the registers a sleeping warp waits for
+
     // LSU interface (driven further down)
     wire                lsu_ready, lsu_idle;
     wire                lsu_wb_valid, lsu_wb_load;
@@ -123,7 +136,8 @@ module rb_core #(
     generate
         for (gw = 0; gw < NW; gw = gw + 1) begin : g_wstate
             assign ready_vec[gw]    = wstate[gw] == WS_READY;
-            assign mem_wait_vec[gw] = wstate[gw] == WS_MEM || wstate[gw] == WS_LSU;
+            assign mem_wait_vec[gw] = wstate[gw] == WS_MEM || wstate[gw] == WS_LSU ||
+                                      wstate[gw] == WS_DEP;
             assign bar_vec[gw]      = wstate[gw] == WS_BAR;
             assign done_vec[gw]     = wstate[gw] == WS_DONE;
         end
@@ -196,6 +210,16 @@ module rb_core #(
     wire s1_illegal = !(s1_is_alu | s1_is_mem | s1_is_li | s1_is_lui | s1_is_s2r | s1_is_bz |
                         s1_is_bnz | s1_is_ssy | s1_is_sync | s1_is_bar | s1_is_ret);
 
+    // registers the instruction reads or writes, checked against the scoreboard
+    wire        s1_reads_rs1 = s1_is_alu | s1_is_mem | s1_is_bz | s1_is_bnz;
+    wire        s1_reads_rs2 = s1_is_alu && !s1_op[4];
+    wire        s1_uses_rd   = s1_is_alu | s1_is_mem | s1_is_li | s1_is_lui | s1_is_s2r;
+    wire [15:0] s1_regs      = (s1_reads_rs1 ? 16'd1 << s1_rs1 : 16'd0) |
+                               (s1_reads_rs2 ? 16'd1 << s1_rs2 : 16'd0) |
+                               (s1_uses_rd   ? 16'd1 << s1_rd  : 16'd0);
+    wire        s1_hazard    = SCOREBOARD && s1_valid && !s1_unwind &&
+                               (pend[s1_warp] & s1_regs) != 16'd0;
+
     wire [RFA-1:0] rf_ra = {s1_warp, s1_rs1};
     wire [RFA-1:0] rf_rb = {s1_warp, s1_rs2};
     wire [RFA-1:0] rf_rc = {s1_warp, s1_rd};
@@ -209,7 +233,7 @@ module rb_core #(
     reg s2_alu, s2_imm, s2_mem, s2_li, s2_lui, s2_s2r, s2_bz, s2_bnz;
     reg s2_ssy, s2_sync, s2_bar, s2_ret, s2_illegal, s2_writes;
     always @(posedge clk) begin
-        s2_valid   <= rst ? 1'b0 : s1_valid;
+        s2_valid   <= rst ? 1'b0 : s1_valid && !s1_hazard;
         s2_warp    <= s1_warp;
         s2_pc      <= s1_pc;
         s2_unwind  <= s1_unwind;
@@ -376,6 +400,7 @@ module rb_core #(
                     sp[w]        <= {SPW{1'b0}};
                     unwind[w]    <= 1'b0;
                     replaying[w] <= 1'b0;
+                    pend[w]      <= 16'd0;
                     wstate[w]    <= thread_exists[w*W] ? WS_READY : WS_DONE;
                 end
             end
@@ -385,7 +410,17 @@ module rb_core #(
             for (w = 0; w < NW; w = w + 1) begin
                 if (issue && pick == w) wstate[w] <= WS_BUSY;
                 if (bar_release && wstate[w] == WS_BAR) wstate[w] <= WS_READY;
-                if (lsu_wb_take && lsu_wb_warp == w) wstate[w] <= WS_READY;
+                if (!SCOREBOARD && lsu_wb_take && lsu_wb_warp == w) wstate[w] <= WS_READY;
+                // scoreboard: a load the LSU accepted marks its register, its write-back clears it
+                if (lsu_start && !s2_op[2] && s2_rd != 4'd0 && s2_warp == w) pend[w][s2_rd] <= 1'b1;
+                if (rf_lsu_we && lsu_wb_warp == w) pend[w][lsu_wb_rd] <= 1'b0;
+                // an instruction that needs a register still loading is dropped in S1; the
+                // warp sleeps until those registers arrive and then fetches it again
+                if (s1_hazard && s1_warp == w) begin
+                    wstate[w]   <= WS_DEP;
+                    dep_need[w] <= s1_regs;
+                end
+                if (wstate[w] == WS_DEP && (pend[w] & dep_need[w]) == 16'd0) wstate[w] <= WS_READY;
                 // parked warps retry once the LSU can take an instruction again
                 if (lsu_ready && wstate[w] == WS_LSU) wstate[w] <= WS_READY;
 
@@ -397,7 +432,7 @@ module rb_core #(
                         if (g_replay) begin
                             pc[w]     <= s2_pc;
                             wstate[w] <= PARK ? WS_LSU : WS_READY;   // else: spin (retry)
-                        end else begin
+                        end else if (!SCOREBOARD) begin
                             wstate[w] <= WS_MEM;
                         end
                     end else if (is_shared) begin
@@ -485,7 +520,7 @@ module rb_core #(
             if (committed)                          cnt[`RB_PERF_LANE_OPS]    <= cnt[`RB_PERF_LANE_OPS] + popcount(M);
             if (running && !issue)                  cnt[`RB_PERF_IDLE]        <= cnt[`RB_PERF_IDLE] + 1;
             if (running && !issue && |mem_wait_vec) cnt[`RB_PERF_IDLE_MEM]    <= cnt[`RB_PERF_IDLE_MEM] + 1;
-            if (replay)                             cnt[`RB_PERF_REPLAYS]     <= cnt[`RB_PERF_REPLAYS] + 1;
+            if (replay || s1_hazard)                cnt[`RB_PERF_REPLAYS]     <= cnt[`RB_PERF_REPLAYS] + replay + s1_hazard;
             if (lsu_start)                          cnt[`RB_PERF_GMEM_INSTR]  <= cnt[`RB_PERF_GMEM_INSTR] + 1;
             if (ev_gm_req)                          cnt[`RB_PERF_GMEM_REQS]   <= cnt[`RB_PERF_GMEM_REQS] + 1;
             if (lsu_start)                          cnt[`RB_PERF_GMEM_LANES]  <= cnt[`RB_PERF_GMEM_LANES] + popcount(M);

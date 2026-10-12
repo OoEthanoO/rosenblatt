@@ -291,6 +291,11 @@ PCB revision.
 
 ### Recorded results: 2026-10-12
 
+These results are for the Verilog as of commit `49a2209`. The memory-system
+options added after it (word-only store merging, the register scoreboard)
+changed the sources, so rebuild before programming a board; `bringup.py`
+refuses a stale image.
+
 Both 85F builds completed with speed grade 6, `router1`, and placement seed 1:
 
 | PCB profile | Final routed maximum clock | Required clock | Result |
@@ -348,6 +353,14 @@ Lessons from getting here:
   variable-index assignments (`x[bank*32 +: 32] = ...`) synthesized into
   full-width shifters; rewritten as one-hot AND-OR logic, and with stores
   served one lane per bank, it shrank to 6,200.
+- **In a wide memory, stores are the expensive direction.** With 32-byte
+  global-memory lines (`--param GMEM_LINE=32`), each lane picks its word out
+  of a loaded line, an 8-to-1 multiplexer per lane. Merging stores into a line
+  needs every byte to choose among all lanes, with the highest lane winning;
+  that made the whole GPU 40% larger. Stores now coalesce within one word
+  only, and the 32-byte build costs 11% more LUTs than the 4-byte one
+  (39,312 against 35,550 in synthesis), for a 1.9x faster one-image kernel
+  when the weights are interleaved (see the write-up, section 4).
 - **DSP blocks run out before logic does.** Each lane needs 3 DSPs for a
   32x32 multiply and 4 for DP4A. The 25F has 28 DSPs, so its 4-lane build
   uses the 16-bit multiplier (1 DSP) and keeps DP4A.

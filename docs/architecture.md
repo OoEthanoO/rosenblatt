@@ -18,6 +18,7 @@ the default build used for simulation has
 | `GMEM_LINE` | 4 | bytes one request moves: 4, 8, 16 or 32 (see below) |
 | `LSU_DEPTH` | 4 | global-memory instructions in flight per core |
 | `PARK` | 0 | 1 = a warp that finds the load/store unit busy sleeps instead of retrying (measured slower) |
+| `SCOREBOARD` | 0 | 1 = a global load stalls only the instructions that use its register, not the whole warp |
 | `MUL_WIDTH` | 32 | 16 = only the low 16 bits of each operand are multiplied |
 | `ENABLE_DP4A` | 1 | packed int8 dot-product instruction |
 
@@ -123,7 +124,7 @@ round-robin arbiter. It accepts one request every `GMEM_INTERVAL` cycles and
 returns read data `GMEM_LATENCY` cycles later, in order. A request moves one
 aligned *line* of `GMEM_LINE` bytes: a single 32-bit word by default, or up to
 32 bytes, like the sectors of a real GPU's memory. Stores carry a byte mask, so
-a line write changes only the bytes the lanes wrote. On an FPGA the memory is
+a write changes only the bytes the lanes wrote. On an FPGA the memory is
 block RAM; the extra latency stages model the DRAM a real GPU uses.
 
 Each core's load/store unit has two parts:
@@ -136,7 +137,11 @@ Each core's load/store unit has two parts:
    scattered addresses cost eight. With 32-byte lines, eight lanes reading
    eight consecutive words cost one request, if the data is laid out so that
    neighbouring lanes read neighbouring words (`ml/gpu.py`'s
-   `layout="interleaved"` does this for the weights).
+   `layout="interleaved"` does this for the weights). Stores coalesce only
+   within a 32-bit word, whatever the line size: on a load each lane picks its
+   word out of the line (an 8-to-1 multiplexer per lane), but a store would
+   need every byte of the line to pick among all lanes, which made the
+   32-byte unit twice as large for a small share of the traffic.
 2. **In flight**: up to `LSU_DEPTH` instructions whose requests have all gone
    out wait for their data. Because the issue part is free as soon as the last
    request has left, several loads overlap in the memory pipeline
@@ -144,17 +149,26 @@ Each core's load/store unit has two parts:
    register-file port, taking free S3 slots (the scheduler skips one issue slot
    when it has to make room).
 
-A warp that issued a global load waits (`WS_MEM`) until the data is written
-back. Meanwhile the other warps run. A memory instruction that finds the
-issue part busy is replayed.
+A warp that issued a global load or store waits (`WS_MEM`) until the unit
+is done with it. Meanwhile the other warps run. A memory instruction that
+finds the issue part busy is replayed.
+
+With `SCOREBOARD=1` the warp keeps going instead. Each warp has a 16-bit
+mask of registers that loads will still write: a load sets its destination's
+bit when the unit accepts it, and the write-back clears it. In S1, an
+instruction that reads or writes a register with its bit set is dropped, and
+the warp sleeps (`WS_DEP`) until those registers have arrived, then fetches
+it again. Stores do not stop the warp. Writes to the same register are
+ordered by the same check, so a load's data can never overwrite a newer
+value. The design reports the option in `HWCFG1`'s feature bits.
 
 ## Host interface
 
 The 32-bit host bus is word addressed: global memory at `0x000000`,
 instruction memory at `0x100000` (write only, broadcast to every core) and
-control registers at `0x200000`. With wide memory lines, a host access moves
-one word of a line (writes use the byte mask). In simulation cocotb drives it directly; on
-an FPGA `rb_uart_bridge.v` turns serial frames into bus transactions
+control registers at `0x200000`. With wide memory lines, a host access still
+moves one word (a write is masked to it). In simulation cocotb drives it
+directly; on an FPGA `rb_uart_bridge.v` turns serial frames into bus transactions
 (`docs/serial.md`). The Python `Device` class hides the difference:
 
 ```python
@@ -180,9 +194,10 @@ architectural events, and the RTL tests require both to agree exactly.
   timing.
 - `tests/scenarios.py`: vector add, two matrix multiplies, special registers,
   random ALU programs, random nested divergence with loops and early returns
-  (checked against a per-thread interpreter), every load/store flavour,
+  (checked against a per-thread interpreter), random loads used at random
+  distances (the scoreboard's stress test), every load/store flavour,
   barriers, and three neural-network paths.
-- `tests/rtl/`: every scenario on the Verilog under three hardware
+- `tests/rtl/`: every scenario on the Verilog under four hardware
   configurations (outputs and event counters must match the emulator exactly),
   the UART bridge at the pin level, and the whole GPU driven through UART.
 - `bench/profile_mnist.py` checks every logit of every image it profiles.

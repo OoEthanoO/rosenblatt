@@ -6,6 +6,7 @@ counters to the JSON file named by $RB_OUT.
 
     RB_WORKLOAD = per_image | tiled      RB_DP4A = 0 | 1      RB_COUNT = images
     RB_LAYOUT = rows | interleaved (weight layout, default rows)
+    RB_UNROLL = 1 | 2 (one-image kernel only, default 1)
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ def run_bench(dut) -> dict:
     dp4a = os.environ.get("RB_DP4A", "1") == "1"
     count = int(os.environ["RB_COUNT"])
     layout = os.environ.get("RB_LAYOUT", "rows")
+    unroll = int(os.environ.get("RB_UNROLL", "1"))
     model = QuantMLP.load()
     data = mnist.load("test")
     q0 = preprocess(data["test_images"][:count])
@@ -38,7 +40,7 @@ def run_bench(dut) -> dict:
 
     runs = []
     if workload == "per_image":
-        gpu = GpuMLP(dev, model, dp4a=dp4a, layout=layout)
+        gpu = GpuMLP(dev, model, dp4a=dp4a, layout=layout, unroll=unroll)
         logits = []
         for i in range(count):
             res = gpu.run(q0[i])
@@ -57,7 +59,8 @@ def run_bench(dut) -> dict:
             for k, v in core.items():
                 totals[k] = totals.get(k, 0) + v
     return {
-        "workload": workload, "dp4a": dp4a, "layout": layout, "count": count, "correct": correct,
+        "workload": workload, "dp4a": dp4a, "layout": layout, "unroll": unroll, "count": count,
+        "correct": correct,
         "config": json.loads(os.environ["RB_CONFIG"]),
         "cycles": sum(r.cycles for r in runs),
         "launch_cycles": [r.cycles for r in runs],

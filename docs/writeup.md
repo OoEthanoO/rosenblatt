@@ -13,11 +13,12 @@ times faster on the same problem.
 
 | | |
 | --- | --- |
-| Hardware | SIMT GPU, 2 cores x 8 lanes x 4 warps (parameterized), about 1,900 lines of Verilog |
-| Software | ISA, assembler, emulator, runtime and 6 kernels; about 4,400 lines of Python including tests |
+| Hardware | SIMT GPU, 2 cores x 8 lanes x 4 warps (parameterized), about 2,000 lines of Verilog |
+| Software | ISA, assembler, emulator, runtime and 6 kernels; about 6,600 lines of Python including tests and tools |
 | Network | 784-64-10 MLP, int8, 97.80% on the MNIST test set (float32: 97.77%) |
 | Verified | every scenario bit-exact against the emulator on 4 hardware configurations; the full network over a simulated UART |
 | Baseline tiled kernel | 3,139 cycles per digit (32-image batch, 256 KiB RTL simulation, DP4A): 125.6 µs at 25 MHz |
+| Memory-system options | 32-byte lines, a register scoreboard and a deeper load queue: with matching kernels, one image 2.9x faster and tiled 1.32x, for 12% more logic |
 | FPGA | ULX3S ECP5-85F: the full design occupies 53% of the logic, with 64 KiB global memory and two supported PCB pinouts. Not yet run on a physical board |
 | RTX 5080 | the same network in 4.1 ns per digit (cuBLAS, tensor cores) |
 
@@ -46,8 +47,10 @@ Details: [architecture.md](architecture.md), [isa.md](isa.md).
 A conventional CPU pipeline lets the next instruction start before the previous
 one has written its result, which needs hazard detection and forwarding
 paths. Rosenblatt never issues two instructions from the same warp into
-the pipeline at once, so there are no hazards: no forwarding, no stalls, no
-scoreboard. The cost is single-warp speed: one warp gets at most one
+the pipeline at once, so neighbouring instructions cannot conflict: no
+forwarding paths and no interlocks. (Global loads take far longer than the
+pipeline; section 4 measures an optional scoreboard for them.) The cost is
+single-warp speed: one warp gets at most one
 instruction every three cycles. The core reaches full speed only with three or
 more ready warps. That is the GPU bet in miniature: give up latency for one
 thread, win throughput for many.
@@ -79,14 +82,25 @@ mechanism easy to verify. A random-program test generates nested if/else, loops
 with per-thread trip counts and early returns, and checks the result against
 running each thread on its own.
 
-### Global memory: one word per request
+### Global memory: one line per request
 
-Global memory delivers one 32-bit word per cycle to the whole GPU. The
-load/store unit **coalesces**: lanes whose addresses share a word are served by
-one request. For int8 data that matters: 8 lanes reading 8 consecutive bytes
-cost 2 requests instead of 8. Real GPUs fetch 32-byte sectors, so coalescing
-helps even for 32-bit data there. Here it only helps bytes and broadcasts. A
-wider memory port is the obvious next step.
+Global memory accepts one request per cycle from the whole GPU, and a request
+moves one aligned *line*: 4 bytes in the default build, or 8, 16 or 32 bytes
+(`GMEM_LINE`). The load/store unit **coalesces**: lanes whose addresses fall
+in the same line share one request. With 4-byte lines, 8 lanes reading 8
+consecutive bytes cost 2 requests instead of 8, but 8 consecutive words still
+cost 8. With 32-byte lines, like the sectors real GPUs fetch, they cost one.
+
+Wide lines are cheap for loads and expensive for stores. On a load, each lane
+picks its own word out of the returned line: an 8-to-1 multiplexer per lane.
+A store needs the reverse. Every byte of the line chooses among all 8 lanes,
+and when two lanes write the same byte the higher lane must win. Built that
+way, the load/store unit for 32-byte lines was four times the size of the
+4-byte one (7,218 against 1,855 LUTs, synthesized on its own), and the whole
+GPU grew by 40%. Stores now coalesce only within one 32-bit word, as they did
+before. That halved the unit (3,527 LUTs) and slowed the tiled kernel by 1%:
+stores are a small part of its traffic, and with wide lines its memory port is
+mostly idle. Section 4 measures what wide lines buy.
 
 ### Shared memory: banks, conflicts, and the price of a crossbar
 
@@ -109,9 +123,9 @@ for the lanes that were not served.
 
 ### Loads block the warp, so the load/store unit must not
 
-A warp that issues a global load waits until the data arrives. There is no
-scoreboard that would let it run independent instructions meanwhile; other
-warps hide the wait instead. The first load/store unit handled one instruction
+By default, a warp that issues a global load waits until the data arrives,
+and other warps hide the wait. An optional register scoreboard (section 4)
+lets it keep going until an instruction needs the loaded register. The first load/store unit handled one instruction
 at a time and only took the next after all its data had returned. Profiling
 showed the cost (section 4): the unit was busy 91% of the time while the
 memory port behind it sat idle more than half the time. The redesigned unit sends one
@@ -169,13 +183,18 @@ on both and requires **identical outputs and identical counters**:
   checked against a one-thread-at-a-time interpreter;
 - every load/store width on global and shared memory, coalescing, bank
   conflicts, "highest lane wins" collisions, barriers;
+- random sequences of global loads and the instructions that use them: as
+  operands, store data, addresses of further loads and branch conditions,
+  overwritten before their data arrives, and still in flight at a barrier or
+  at the end of the kernel;
 - vector add, naive and tiled matrix multiply, a tree reduction;
 - the network three ways: one image at a time, batched and tiled, and the full
-  trained model;
+  trained model, with both weight layouts;
 - four hardware configurations: the default; a 1-core 4-lane build with a
-  16-bit multiplier, no DP4A and a one-instruction load/store queue; and a
-  3-core build with slow, narrow memory, a two-instruction queue and parked
-  warps; and the default configuration with 32-byte global-memory lines.
+  16-bit multiplier, no DP4A, a one-instruction load/store queue and the
+  register scoreboard; a 3-core build with slow memory, 8-byte lines, a
+  two-instruction queue and parked warps; and the default configuration with
+  32-byte global-memory lines and the scoreboard.
 
 The UART bridge is tested at the pin level (corrupted frames, glitches, bad
 stop bits, ±1% baud error, stalled buses), and the production Python driver runs
@@ -188,7 +207,7 @@ measures against the NumPy reference.
 Every number in this section comes from cycle-accurate simulation of the
 Verilog (Icarus Verilog) running real MNIST test images, with every output score
 checked against the NumPy reference. `python bench/profile_mnist.py` reruns
-all 27 experiments; full tables are in
+all 44 experiments; full tables are in
 [bench/results/summary.md](../bench/results/summary.md). Unless stated
 otherwise the GPU is the default build: 2 cores x 8 lanes x 4 warps, global
 memory latency 8 cycles, one 32-bit request per cycle.
@@ -275,6 +294,111 @@ warps were what kept it busy. The option stays in the hardware (`PARK`), off.
 This found a real bug too: the first run of the one-instruction configuration
 deadlocked, because the slot counters of a one-entry queue counted past their
 only slot. No test configuration had used a queue depth of 1. Now one does.
+
+### Wider memory lines need a matching data layout
+
+The one-image kernel spends its time on weight loads. The 8 lanes of a warp
+compute 8 neighbouring neurons, and each reads the next word of its own row of
+the weight matrix. With row-major weights those words are a row (784 bytes)
+apart, so every lane needs its own request: 14,404 per digit, with the memory
+port 81% busy. Wider lines alone cannot fix that, and the experiment confirms
+it:
+
+| Line | Weight layout | One image: cycles | Requests | Tiled: cycles | Requests |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 4 B (default) | row-major | 17,796 | 14,404 | 3,139 | 2,100 |
+| 4 B | interleaved | 17,803 | 14,404 | 3,139 | 2,100 |
+| 16 B | row-major | 17,746 | 14,349 | 2,864 | 1,785 |
+| 16 B | interleaved | 10,326 | 4,829 | 2,571 | 561 |
+| 32 B | row-major | 17,737 | 14,340 | 2,864 | 1,784 |
+| 32 B | interleaved | **9,354** | 3,236 | **2,539** | 356 |
+
+![cycles per digit by line size and weight layout](img/memory_lines.png)
+
+The *interleaved* layout (`layout="interleaved"` in `ml/gpu.py`) stores the
+weights one word column at a time: word k of neuron 0, word k of neuron 1,
+and so on, then word k+1. A warp's 8 weight loads now fall in 32 consecutive
+bytes. On its own the layout changes nothing either, because a 4-byte line
+still holds a single word. Together, the two cut the one-image kernel's
+requests by 4.5x and its time by 1.9x. The tiled kernel gains less (1.24x),
+because shared memory had already removed most of its traffic. 16-byte lines
+help it a little even with row-major weights: the four lanes that stage one
+image's inputs read 16 consecutive bytes.
+
+Neither kernel is limited by bandwidth any more. The memory port is 35% busy
+in the one-image kernel and 14% in the tiled one. In the one-image kernel, 35%
+of cycles now issue nothing while warps wait for loads: latency is the limit,
+because a warp stops at each load. The tiled kernel issues 0.81
+instructions per cycle per core, out of a possible 1.0. It is now limited by
+how many instructions it executes.
+
+This is the lesson CUDA programmers learn as *coalesced access*: the memory
+system rewards neighbouring threads that touch neighbouring addresses, and
+the data has to be laid out to make that happen. The hardware feature and the
+data layout only pay off together. NVIDIA's libraries take this further and
+reorder weights into layouts built for their tensor cores.
+
+The cost, for the whole GPU on the 85F (synthesis):
+
+| Line | LUTs | Flip-flops | Block RAM |
+| --- | ---: | ---: | ---: |
+| 4 B (default) | 35,550 | 8,366 | 100 |
+| 16 B | 36,596 (+3%) | 9,040 | 100 |
+| 32 B | 39,312 (+11%) | 9,937 | 100 |
+
+Block RAM does not change: the same 64 KiB becomes fewer, wider lines. Most
+of the extra flip-flops are the memory's latency pipeline, which now carries
+32 bytes per stage instead of 4. The board build keeps 4-byte lines. On the
+board, sending each image over the serial link takes longer than the GPU
+spends on it, and the first bring-up should use the configuration that has
+been tested longest. A 32-byte build is one parameter away
+(`python fpga/build.py ulx3s-85f --param GMEM_LINE=32`).
+
+### One bottleneck after another
+
+With wide lines, the one-image kernel stopped being limited by bandwidth.
+Following the counters from there, each change exposed the next limit:
+
+| Change, each added to the one above | Cycles per digit | What the counters showed next |
+| --- | ---: | --- |
+| baseline: 4-byte lines, row-major weights | 17,796 | memory port 81% busy |
+| 32-byte lines, interleaved weights | 9,354 | 35% of cycles idle while warps wait for loads |
+| register scoreboard | 7,989 | 4 of the loop's 7 instructions are bookkeeping |
+| loop unrolled by two | 7,318 | load/store unit busy 97% of cycles, 3,065 replays per digit |
+| 8-instruction load/store queue | **6,057** | 0.78 instructions per cycle per core, out of 1.0 |
+
+**A register scoreboard** (`SCOREBOARD=1`). By default a warp stops at every
+global load until its data is back. With the scoreboard, a load only marks its
+destination register as pending. The warp keeps issuing until an instruction
+reads or writes a pending register; that instruction is dropped in the decode
+stage, and the warp sleeps until the registers it needs have arrived. Stores
+no longer stop the warp at all. NVIDIA's GPUs use scoreboards in the same way
+to let warps run past outstanding loads. The hardware is 32 bits of state per
+warp and a comparison in the decode stage: about 1,100 LUTs for the whole GPU
+(3%). It bought 17%, less than hoped, because the loop gave a warp little to
+overlap. Each iteration loads one input word and one weight word, and the
+`dp4a` right after needs both.
+
+**Unrolling the loop** by two (`unroll=2` in `GpuMLP`, `UNROLL` in
+`dense_int8.s`) handles two words per iteration. That is a fifth fewer
+instructions, and four loads per warp in flight instead of two. It bought 9%,
+and moved the limit into the load/store unit, which holds four instructions
+for all the warps of a core. The unit was busy 97% of cycles, and warps that
+found it full kept retrying.
+
+**A deeper queue** (`LSU_DEPTH=8`) cut the replays from 3,065 to 844 per
+digit for almost no logic. The kernel now takes 6,057 cycles, 2.9x faster than
+where it started, and the cores issue an instruction on 78% of cycles.
+
+The tiled kernel gains little from the same changes. With 32-byte lines the
+scoreboard takes it from 2,539 to 2,385 cycles (1.32x faster than the 3,139 it
+started at), because it already issued an instruction on 81% of cycles.
+Making it much faster means executing fewer instructions.
+
+None of these changes is clever on its own. The work was in reading the
+counters after each one to see where the time had gone. That is also why the
+one-image kernel's 2.9x does not carry over to the tiled one: each fix
+addresses the limit of a particular piece of code.
 
 ## 5. On an FPGA
 
@@ -390,6 +514,9 @@ Reading the table:
    of the 10,000-image batch (7.8 MB) in L2. Rosenblatt's tiled kernel already
    ran its 100 MB/s port 67% full. Width without bandwidth would have bought
    nothing; the profiling in section 4 shows exactly this, at small scale.
+   Eight times the bandwidth (32-byte lines, with the weights laid out to
+   use them) made that kernel 1.24x faster, and then instruction issue was the
+   limit.
 5. **Specialized units.** cuBLAS uses tensor cores, which multiply small
    matrix tiles per instruction rather than four bytes per lane. That is
    another 1.7x at this batch size and 2.7x at 100,000 images. It is the same
@@ -411,18 +538,19 @@ In order of expected payoff, judged from the measurements above:
    run `python fpga/bringup.py --port COM5` with the matching revision. The
    script loads SRAM, verifies all global memory, and compares every network
    layer with the reference on 20 test images.
-2. **A wider memory port.** The one-image kernel spends its time waiting on
-   one 4-byte request per cycle. Fetching 16 or 32 bytes per request, as real
-   GPUs do with 32-byte sectors, would let word-sized accesses coalesce too.
-3. **A register scoreboard.** Today a warp stops at every global load. If it
-   only stopped when an instruction actually needs the loaded register, one
-   warp could have several loads in flight and keep computing in between.
-   That is what NVIDIA's hardware does.
-4. **More warps per core.** Four warps hide an 8-cycle memory latency but not a
-   32-cycle one. Real SMs hold 48-64 warps.
-5. **A matrix instruction.** DP4A cut instructions by about 4x. A small
-   tensor-core-style instruction (for example a 4x4 int8 matrix times a 4x4
-   matrix per instruction across the warp) is the next step on the same path.
+2. **A matrix instruction.** With wide lines and the scoreboard the tiled
+   kernel issues an instruction on 86% of cycles, so further gains must come
+   from executing fewer instructions. DP4A cut instructions by about 4x. A
+   small tensor-core-style instruction (for example a 4x4 int8 matrix times a
+   4x4 matrix per instruction across the warp) is the next step on the same
+   path.
+3. **More warps per core.** Four warps hide an 8-cycle memory latency but not a
+   32-cycle one. Real SMs hold 48-64 warps. The scoreboard lets each warp hide
+   some latency itself, so more warps matter most for code that cannot be
+   unrolled.
+4. **The memory options on the board.** 32-byte lines, the scoreboard and an
+   8-instruction queue together cost 12% more logic. They are off in the board
+   build until the plain design has run on real hardware.
 
 ### Tiny Tapeout
 

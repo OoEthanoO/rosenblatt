@@ -104,6 +104,16 @@ Moving less data (shared memory) gained 5.7x and doing four multiplies per
 instruction (DP4A) gained 4x. The one-image kernel is limited by memory
 bandwidth, not arithmetic.
 
+Optional memory-system upgrades go further. A wider memory port
+(`GMEM_LINE=32`: 32 bytes per request instead of 4) makes the one-image kernel
+1.9x faster, but only when the weights are stored so that neighbouring threads
+read neighbouring words (`layout="interleaved"`); with row-major weights it
+changes almost nothing. Adding a register scoreboard (`SCOREBOARD=1`: a load
+stalls only the instructions that need its register), a loop unrolled by two,
+and an 8-instruction load queue brings the one-image kernel to 6,057 cycles,
+2.9x faster than the baseline; the tiled kernel reaches 2,385 cycles. The
+hardware options cost 12% more logic and are off in the board build.
+
 The same network on an RTX 5080 Laptop GPU (`cuda/`), 10,000 images, every
 output score identical to the reference:
 

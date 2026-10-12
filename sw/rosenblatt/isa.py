@@ -198,7 +198,7 @@ class Perf(IntEnum):
     LANE_OPS = 2       # sum over committed instructions of active lanes
     IDLE = 3           # cycles in which no instruction issued
     IDLE_MEM = 4       # ...of which at least one warp was waiting on memory
-    REPLAYS = 5        # re-issues: LSU busy, or a shared-memory bank conflict
+    REPLAYS = 5        # re-issues: LSU busy, a shared-memory bank conflict, or a register still loading
     GMEM_INSTR = 6     # global load/store instructions executed
     GMEM_REQS = 7      # 32-bit requests sent to global memory (after coalescing)
     GMEM_LANES = 8     # lane accesses inside those instructions (before coalescing)
@@ -210,6 +210,7 @@ class Perf(IntEnum):
 
 
 FEATURE_DP4A = 0x01
+FEATURE_SCOREBOARD = 0x02   # a global load stalls only the instructions that use its register
 HW_VERSION = 1
 
 # --------------------------------------------------------- encode/decode
@@ -339,6 +340,7 @@ def verilog_header() -> str:
     out.append(f"`define RB_HOST_IMEM_BASE 24'h{HOST_IMEM_BASE:06X}")
     out.append(f"`define RB_HOST_CSR_BASE  24'h{HOST_CSR_BASE:06X}")
     out.append(f"`define RB_FEATURE_DP4A   8'h{FEATURE_DP4A:02X}")
+    out.append(f"`define RB_FEATURE_SCOREBOARD 8'h{FEATURE_SCOREBOARD:02X}")
     out.append(f"`define RB_HW_VERSION     8'd{HW_VERSION}")
     out += ["", "`endif", ""]
     return "\n".join(out)

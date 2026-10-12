@@ -90,6 +90,16 @@ def main() -> int:
                 [f"line{x}_{layout}_{w}" for x in (16, 32) for layout in ("rows", "interleaved")],
                 "lineN: one request moves an N-byte line (default 4); rows: weights row-major "
                 "(default); interleaved: neighbouring neurons' weight words side by side.")
+    for w in ("per_image", "tiled"):
+        section(f"Register scoreboard ({w})",
+                [f"{w}_dp4a", f"scoreboard_{w}", f"line32_interleaved_{w}", f"scoreboard_line32_{w}"],
+                "scoreboard: a global load stalls only the instructions that use its register, "
+                "not the whole warp. line32 rows use interleaved weights.")
+    section("One bottleneck after another (per_image)",
+            ["per_image_dp4a", "line32_interleaved_per_image", "scoreboard_line32_per_image",
+             "unroll2_scoreboard_line32_per_image", "lsu8_unroll2_scoreboard_line32_per_image"],
+            "Each row adds one change to the row above: 32-byte lines with interleaved weights, "
+            "the register scoreboard, the loop unrolled by two, an 8-instruction LSU queue.")
     (RESULTS / "summary.md").write_text("\n".join(md) + "\n")
     print((RESULTS / "summary.md").read_text())
 

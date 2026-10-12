@@ -91,6 +91,7 @@
 `define RB_HOST_IMEM_BASE 24'h100000
 `define RB_HOST_CSR_BASE  24'h200000
 `define RB_FEATURE_DP4A   8'h01
+`define RB_FEATURE_SCOREBOARD 8'h02
 `define RB_HW_VERSION     8'd1
 
 `endif

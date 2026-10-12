@@ -90,6 +90,7 @@ class BusBackend(Backend):
             num_lanes=c0 & 0xFF, num_warps=c0 >> 8 & 0xFF, num_cores=c0 >> 16 & 0xFF,
             imem_words=1 << (c1 & 0xFF), gmem_bytes=4 << (c1 >> 8 & 0xFF),
             smem_bytes=4 << (c1 >> 16 & 0xFF), dp4a=bool(c1 >> 24 & isa.FEATURE_DP4A),
+            scoreboard=bool(c1 >> 24 & isa.FEATURE_SCOREBOARD),
             gmem_latency=c2 & 0xFF, stack_depth=c2 >> 8 & 0xFF, mul_width=c2 >> 16 & 0xFF,
         )
 
