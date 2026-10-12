@@ -1,0 +1,451 @@
+# Rosenblatt: a tiny GPU, from logic gates to handwritten digits
+
+Rosenblatt is a small GPU designed from scratch: the hardware in Verilog, an
+instruction set, an assembler, a reference emulator, a driver, a quantized
+neural network that recognizes handwritten digits, builds for a real FPGA
+board, and a profiling study that ends on an NVIDIA RTX 5080. It is named after
+Frank Rosenblatt, whose 1958 Mark I Perceptron was a neural network built
+directly in hardware.
+
+This document is about the decisions: what was built, what each choice cost,
+what the measurements showed, and why a commercial GPU is tens of thousands of
+times faster on the same problem.
+
+| | |
+| --- | --- |
+| Hardware | SIMT GPU, 2 cores x 8 lanes x 4 warps (parameterized), about 1,900 lines of Verilog |
+| Software | ISA, assembler, emulator, runtime and 6 kernels; about 4,400 lines of Python including tests |
+| Network | 784-64-10 MLP, int8, 97.80% on the MNIST test set (float32: 97.77%) |
+| Verified | every scenario bit-exact against the emulator on 4 hardware configurations; the full network over a simulated UART |
+| Fastest kernel | 3,139 cycles per digit (batched, shared-memory tiled, DP4A): 125.6 µs at 25 MHz |
+| FPGA | ULX3S ECP5-85F: the full design occupies 53% of the logic, with 64 KiB global memory and two supported PCB pinouts. Not yet run on a physical board |
+| RTX 5080 | the same network in 4.1 ns per digit (cuBLAS, tensor cores) |
+
+## 1. The machine in one page
+
+A kernel launch runs a grid of thread blocks; every thread runs the same
+program on different data. Threads are grouped into **warps** of 8 that share
+one program counter and execute in lockstep on a core's 8 lanes (SIMT, "single
+instruction, multiple threads", the execution model of every NVIDIA GPU). A
+core holds 4 warps and each cycle issues one instruction from whichever warp
+is ready. While one warp waits for memory, the others compute.
+
+```
+   S0 schedule + fetch -> S1 decode + register read -> S2 execute -> S3 write back
+```
+
+Each core has 8 register files (16 registers x 4 warps x 32 bits), 8 ALUs
+with an int8 dot-product instruction (DP4A), 4 KiB of shared memory in 8
+banks, and a load/store unit for the global memory that all cores share.
+Details: [architecture.md](architecture.md), [isa.md](isa.md).
+
+## 2. Design decisions and what they cost
+
+### Warps instead of forwarding
+
+A conventional CPU pipeline lets the next instruction start before the previous
+one has written its result, which needs hazard detection and forwarding
+paths. Rosenblatt never issues two instructions from the same warp into
+the pipeline at once, so there are no hazards: no forwarding, no stalls, no
+scoreboard. The cost is single-warp speed: one warp gets at most one
+instruction every three cycles. The core reaches full speed only with three or
+more ready warps. That is the GPU bet in miniature: give up latency for one
+thread, win throughput for many.
+
+### Three register-file read ports
+
+`mad` (rd += rs1 x rs2), `dp4a` and stores read three registers. FPGA RAMs have
+one read port, so each lane stores its register file three times and writes
+all copies. The alternative, two-operand instructions only, would cost an extra
+instruction for every multiply-accumulate, the most common operation in a
+neural network.
+
+### Divergence the way Fermi did it
+
+When threads of a warp disagree on a branch, something has to run both paths.
+The options:
+
+| Approach | Used by | Cost |
+| --- | --- | --- |
+| Predication only (no divergent branches) | early shader cores | the compiler must if-convert everything |
+| Per-warp reconvergence stack (`ssy` / `sync`) | NVIDIA Fermi to Pascal | an 8-entry stack per warp |
+| Per-thread program counters | NVIDIA Volta and later | a scheduler that tracks every thread |
+
+Rosenblatt uses the stack. A divergent branch runs the fall-through threads
+first and pushes the taken ones; `sync` switches to them or reconverges.
+Correctness never depends on `ssy`/`sync` placement. Threads that split simply
+stay split until they exit, so reconvergence only affects speed. That makes the
+mechanism easy to verify. A random-program test generates nested if/else, loops
+with per-thread trip counts and early returns, and checks the result against
+running each thread on its own.
+
+### Global memory: one word per request
+
+Global memory delivers one 32-bit word per cycle to the whole GPU. The
+load/store unit **coalesces**: lanes whose addresses share a word are served by
+one request. For int8 data that matters: 8 lanes reading 8 consecutive bytes
+cost 2 requests instead of 8. Real GPUs fetch 32-byte sectors, so coalescing
+helps even for 32-bit data there. Here it only helps bytes and broadcasts. A
+wider memory port is the obvious next step.
+
+### Shared memory: banks, conflicts, and the price of a crossbar
+
+Shared memory has 8 banks so 8 lanes can access it in one cycle. The routing
+between lanes and banks turned out to be the most expensive block in the
+design. The first version used priority muxes and variable-index writes. Yosys
+turned those into wide shifters, and the result was **14,600 LUTs, more than
+all eight ALUs together**. Two changes brought it to about 6,000:
+
+1. writing the routing as one-hot AND-OR logic (each bank has exactly one
+   "leader" lane, so no priority encoding is needed), and
+2. letting stores write **one lane per bank per cycle**. Several lanes
+   storing into the same word take turns, lowest lane first, so the highest lane
+   lands last. That preserves the architectural rule that the highest lane wins,
+   and removes a byte-merging network. The price is extra cycles for colliding
+   stores, which well-written kernels do not do.
+
+Bank conflicts are handled the way NVIDIA does it: the instruction is replayed
+for the lanes that were not served.
+
+### Loads block the warp, so the load/store unit must not
+
+A warp that issues a global load waits until the data arrives. There is no
+scoreboard that would let it run independent instructions meanwhile; other
+warps hide the wait instead. The first load/store unit handled one instruction
+at a time and only took the next after all its data had returned. Profiling
+showed the cost (section 4): the unit was busy 91% of the time while the
+memory port behind it sat idle more than half the time. The redesigned unit sends one
+instruction's requests and then accepts the next while up to four are still
+waiting for data. This is memory-level parallelism, the reason real GPUs track
+hundreds of outstanding misses.
+
+A plausible-looking fix that failed: putting warps to sleep while the
+load/store unit is busy, instead of letting them retry. It saves issue slots,
+but a woken warp needs three cycles to come back down the pipeline, and the
+unit sits idle meanwhile. Measured: 9% slower for the memory-bound kernel. The
+hardware still has it as an option (`PARK`), off by default.
+
+### A domain-specific instruction: DP4A
+
+`dp4a rd, ra, rb` adds the four products of the signed bytes of `ra` and `rb`
+to `rd`: four int8 multiply-adds in one instruction. NVIDIA added the same
+instruction in Pascal (2016). It is also the idea behind MMX in 1997 (packed
+integer arithmetic in a wide register), and behind today's tensor cores, which
+are the same move scaled up. It cuts the instructions per digit almost 4x
+(from 45,071 to 11,471 warp instructions for the one-image kernel) and needs
+four 8x8 multipliers per lane. On the ECP5 those are four DSP blocks
+per lane, which is why the smallest build uses a 16-bit multiplier for `mul`
+to stay within the chip's 28 DSPs.
+
+### Quantization without a multiplier
+
+The network runs entirely in integers: int8 weights and activations, int32
+accumulators. Rescaling a layer's int32 sums back to int8 normally takes a
+multiply by a fixed-point factor. Rosenblatt chooses the hidden layer's scale as
+a power of two times the product of the input and weight scales, so rescaling
+is just `(acc + round) >> 10` followed by a clamp. That costs at most one bit of
+activation range. Measured accuracy: float32 97.77%, int8 after post-training
+quantization 97.74%, after three epochs of quantization-aware fine-tuning
+97.80%. The bits were free.
+
+### The host link has no retries
+
+On the FPGA, the PC talks to the GPU over a UART with CRC-checked frames and
+sequence numbers (`docs/serial.md`). The driver never retries: if a response
+is lost, the write may or may not have happened, and silently repeating it
+could double-apply it. Failures stop the connection and the board is reset.
+Simple, and impossible to get subtly wrong.
+
+## 3. How it was verified
+
+The emulator (`sw/rosenblatt/emu.py`) defines what the hardware must do. It has
+no timing, but it counts the same architectural events as the hardware's
+performance counters: instructions, active lanes, coalesced requests,
+shared-memory wavefronts, divergent branches. Every RTL test runs a scenario
+on both and requires **identical outputs and identical counters**:
+
+- straight-line random ALU programs over edge-case values;
+- random nested divergence (if/else, per-thread loops, early returns),
+  checked against a one-thread-at-a-time interpreter;
+- every load/store width on global and shared memory, coalescing, bank
+  conflicts, "highest lane wins" collisions, barriers;
+- vector add, naive and tiled matrix multiply, a tree reduction;
+- the network three ways: one image at a time, batched and tiled, and the full
+  trained model;
+- three hardware configurations: the default; a 1-core 4-lane build with a
+  16-bit multiplier, no DP4A and a one-instruction load/store queue; and a
+  3-core build with slow, narrow memory, a two-instruction queue and parked
+  warps.
+
+The UART bridge is tested at the pin level (corrupted frames, glitches, bad
+stop bits, ±1% baud error, stalled buses), and the production Python driver runs
+the full network on the simulated GPU through the simulated UART pins. The
+profiling study checks every one of the 10 output scores of every image it
+measures against the NumPy reference.
+
+## 4. Profiling: where the time goes
+
+Every number in this section comes from cycle-accurate simulation of the
+Verilog (Icarus Verilog) running real MNIST test images, with every output score
+checked against the NumPy reference. `python bench/profile_mnist.py` reruns
+all 27 experiments; full tables are in
+[bench/results/summary.md](../bench/results/summary.md). Unless stated
+otherwise the GPU is the default build: 2 cores x 8 lanes x 4 warps, global
+memory latency 8 cycles, one 32-bit request per cycle.
+
+### Four ways to run the same network
+
+| Strategy | Cycles per digit | Warp instructions | Global requests | Memory port busy | IPC per core |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| one image at a time, scalar int8 | 70,324 | 45,071 | 57,316 | 82% | 0.33 |
+| one image at a time, DP4A | 17,796 | 11,471 | 14,404 | 81% | 0.33 |
+| batched, shared-memory tiles, scalar | 8,851 | 15,532 | 2,100 | 24% | 0.88 |
+| batched, shared-memory tiles, DP4A | **3,139** | 4,108 | 2,100 | 67% | 0.65 |
+
+![cycles and memory traffic per strategy](img/strategies.png)
+
+**One image at a time** (`kernels/dense_int8.s`): each of 64 threads computes
+one hidden neuron, reading its 784 weights straight from global memory.
+Weights dominate the traffic: 14,404 requests per digit. The memory port is
+busy 81% of the time while each core issues an instruction only one cycle in
+three. The machine is waiting on data, not on arithmetic. The bandwidth
+experiment settles it: with memory that accepts a request only every 2 or 4
+cycles, the time per digit grows 1.7x and 3.3x, and the port is 98-99% busy.
+
+**Adding shared memory** (`kernels/dense_tiled.s`): a block of 32 threads now
+handles 8 images at once. The 8 images' inputs are staged in shared memory,
+16 bytes at a time, and each thread keeps 8 accumulators, so each weight word
+fetched from global memory is used 8 times instead of once. Global traffic
+drops 6.9x, to 2,100 requests per digit, and time per digit drops 5.7x. Without
+DP4A the tiled kernel is no longer memory-bound at all (port 24% busy, IPC
+0.88); DP4A then makes the arithmetic 3.8x cheaper, and the memory port is the
+limit again (67% busy at the default bandwidth, 87-93% when bandwidth is cut).
+
+This is the central observation of the project: the arithmetic was never
+the problem. Of the 22x speedup from the naive kernel to the best one, 5.7x
+came from moving less data (shared memory) and 4x from doing more work per
+instruction (DP4A). Every further gain depends on the memory system.
+
+### Latency, warps and cores
+
+![sensitivity to memory latency and bandwidth](img/memory_sensitivity.png)
+
+- **Latency** is mostly hidden. Going from 1 to 16 cycles changes the
+  one-image kernel by 6% and the tiled kernel by 16%; only 32 cycles hurts
+  (+39% and +33%). Four warps, each able to have a load in flight, cover the
+  wait. With two warps per core the one-image kernel is 34% slower (23,897
+  cycles).
+- **Bandwidth** is not hidden (above): it is the resource both kernels run out of.
+- **More cores** help only when there is work to spread. One image has only
+  64 hidden neurons, two blocks, so a 4-core GPU runs it exactly as fast as a
+  2-core one (17,796 cycles): two cores sit idle. The batched kernel has eight
+  blocks for 32 images and scales from 5,601 cycles on one core to 2,426 on
+  four, where the global memory port, shared by all cores, saturates (87%
+  busy).
+
+![speedup with more cores](img/core_scaling.png)
+
+### Profiling the hardware itself
+
+The same counters turned on the hardware itself and found a weakness in the
+first load/store unit, plus one fix that looked right and wasn't:
+
+| Load/store unit | One image at a time | Batched, tiled |
+| --- | ---: | ---: |
+| first design: one instruction at a time | 30,328 | 4,083 |
+| first design, warps sleep while it is busy | 34,267 | 4,199 |
+| **final: up to 4 instructions in flight** | **17,796** | **3,139** |
+| final, warps sleep while it is busy | 19,371 | 3,168 |
+
+The first unit sent an instruction's requests, waited until *all* its data
+had come back, and only then took the next instruction. For the one-image
+kernel the counters showed the memory port busy only 47% of the time and the
+waiting warps retrying their loads 44,000 times per digit. The memory was not
+the limit; the unit in front of it was. Letting the unit accept the next
+instruction as soon as the previous one's requests are out, with up to four
+waiting for data, made the one-image kernel 1.7x faster and the tiled kernel
+1.3x.
+
+The retries looked like a second flaw: every retry uses an issue slot another
+warp could have used. Making a warp sleep until the unit is free removes them,
+and was slower in every case. A woken warp needs three cycles to get back down
+the pipeline, and the unit sits idle meanwhile; the "wasteful" retrying
+warps were what kept it busy. The option stays in the hardware (`PARK`), off.
+
+This found a real bug too: the first run of the one-instruction configuration
+deadlocked, because the slot counters of a one-entry queue counted past their
+only slot. No test configuration had used a queue depth of 1. Now one does.
+
+## 5. On an FPGA
+
+The bring-up target is the ULX3S with an LFE5U-85F-6BG381C, built with Yosys,
+nextpnr and ecppack. A board-independent wrapper puts the UART bridge in
+front of the GPU; the board file adds a synchronized button reset and status
+LEDs. The whole path from the PC's serial port to the GPU is simulated at the
+pin level with the real Python driver, including the 115,200-baud link and
+recovery from a partial packet while a kernel is running. The build has not
+yet run on a physical board.
+
+| Build | GPU | Logic cells | Flip-flops | Block RAM | DSP | Max clock |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Earlier ULX3S-25F build | 1 core x 4 lanes, 16-bit multiply | 13,872 / 24,288 (57%) | 3,306 | 50 / 56 | 20 / 28 | 51.7 MHz (historical) |
+| ULX3S-85F, PCB v3.1.7 | 2 cores x 8 lanes (the default design) | 44,382 / 83,640 (53%) | 8,366 | 100 / 208 | 112 / 156 | 32.71 MHz |
+| ULX3S-85F, PCB v3.0 | 2 cores x 8 lanes | 44,382 / 83,640 (53%) | 8,366 | 100 / 208 | 112 / 156 | 37.02 MHz |
+
+Both 85F images passed the 25 MHz constraint after routing on 2026-10-12;
+the build script refuses to produce a bitstream if timing fails. The
+[validation record](../fpga/validation/ulx3s-85f.json) identifies their exact
+sources and tool versions. The 25F measurement predates the current board
+wrapper and is retained only to illustrate the smaller configuration.
+
+The design runs from the board's 25 MHz oscillator. The global memory
+(64 KiB of internal block RAM) holds the 51 KB network; external SDRAM is
+unused. PCB v3.1.6/v3.1.7 and v2.x/v3.0.x have separate pin profiles. The build
+records source and bitstream checksums so the bring-up script can reject a
+stale image. See [fpga.md](fpga.md) for the PCB selection and first-use steps.
+
+What the FPGA work taught, in short (details in [fpga.md](fpga.md)):
+
+- **The crossbar costs more than the arithmetic it feeds.** The shared-memory
+  routing was 14,600 LUTs in its first form and is about 6,200 now, 29% of a
+  core. Real GPUs pay the same: shared memory is fast because a lot of silicon
+  goes into routing.
+- **DSP blocks ran out before logic.** Seven per lane (3 for a 32-bit multiply,
+  4 for DP4A) do not fit the 25F's 28. Hence the 16-bit multiplier option,
+  which the kernels were already written to tolerate.
+- **Timing pointed at the multiplier.** The first 25F build reached 28.5 MHz:
+  register file, DSP multiplier, a long wire, then the adder tree of
+  `dp4a`/`mad`, all in one cycle. Splitting the ALU over two pipeline stages
+  raised it to 51.7 MHz at no cost in cycles, because results are written back
+  in the second stage anyway. That earlier build's remaining bottleneck was
+  shared-memory bank-conflict detection.
+
+## 6. Against a real NVIDIA GPU
+
+The same network, with the same integer arithmetic, on an NVIDIA GeForce RTX
+5080 Laptop GPU (Blackwell, 60 SMs of 128 lanes, 48 warps per SM, 100 KiB of
+shared memory per SM, 48 MiB of L2, 256-bit GDDR7, measured SM clock about
+2.8 GHz under load). `cuda/mnist_bench.cu` implements it four ways. All four
+reproduce every output score of all 10,000 test images exactly, and all reach
+97.80%.
+
+| Implementation | ns per digit (10,000 images) | Speedup |
+| --- | ---: | ---: |
+| naive: one thread per output, byte loads | 123.5 | 1x |
+| DP4A (`__dp4a`, 4 int8 products per instruction) | 32.0 | 3.9x |
+| shared-memory tiles + DP4A | 7.2 | 17x |
+| cuBLAS int8 GEMM (tensor cores) | 4.1 | 30x |
+
+With 100,000 images per launch, cuBLAS reaches 3.3 ns per digit (305 million
+digits per second).
+
+**The ladder is the same as on Rosenblatt.** DP4A is worth 3.9x on the
+RTX 5080 and 4.0x on Rosenblatt; shared-memory tiling 4.5x and 5.7x. Both
+machines have many lanes, a narrow path to off-chip memory, and a small fast
+memory next to the lanes, so the same kernel changes pay off on both.
+
+### How much faster, and why
+
+Rosenblatt's FPGA build runs at the ULX3S's 25 MHz clock, so its best kernel
+(3,139 cycles) takes **125.6 microseconds per digit**. The RTX 5080 runs the
+*same algorithm* in 7.2 ns, **17,500 times faster**; with cuBLAS, 30,000 times.
+`bench/compare.py` takes that ratio apart:
+
+| | Rosenblatt (ULX3S) | RTX 5080 Laptop | Ratio |
+| --- | ---: | ---: | ---: |
+| clock | 25 MHz | 2,827 MHz | 113x |
+| lanes | 16 | 7,680 | 480x |
+| DP4A capacity: lanes x clock x 8 ops | 3.2 GOPS | 174 TOPS ¹ | 54,000x |
+| achieved, same tiled kernel | 0.81 GOPS (25% of capacity) | 14.2 TOPS (8%) | 17,500x |
+| global-memory bandwidth | 100 MB/s (on-chip BRAM) | 896 GB/s (GDDR7) | 9,000x |
+| on-chip memory | 8 KiB | 5.9 MiB shared + 48 MiB L2 | |
+| threads in flight | 64 | 92,160 | 1,440x |
+
+¹ An upper bound that assumes one DP4A per lane per cycle.
+
+Reading the table:
+
+1. **113x is clock speed**: fixed logic on a modern chip process against
+   programmable logic. An FPGA builds every gate from lookup tables and every
+   wire from programmable switches. Before Rosenblatt's ALU was split over two
+   pipeline stages, its longest path was 35 ns, and 8 ns of that was one wire
+   from a DSP block to an adder. Now it is about 19 ns (51.7 MHz on the 25F),
+   still more than fifty times a 2.8 GHz clock period. The RTX's pipelines
+   are designed for speed; Rosenblatt's four stages were designed to be simple.
+2. **480x is width**: transistors. Rosenblatt's 16 lanes fill 53% of the
+   largest ULX3S; the RTX 5080 has 7,680. Clock times width is the 54,000x
+   difference in raw capacity.
+3. **The rest is utilization, and it goes the other way.** Rosenblatt keeps 25%
+   of its lanes doing useful dot products on this kernel; the RTX only 8%.
+   Ten thousand 784-pixel images is not much work for 92,160 threads: the
+   whole batch takes 72 microseconds of GPU time, and the network's 64 hidden
+   neurons give each of the 60 SMs little to do. That is why the measured gap
+   (17,500x) is smaller than the capacity gap.
+4. **Memory scales with the lanes.** The RTX has 9,000x the bandwidth and
+   enough on-chip memory to keep the whole network (51 KB) in every SM and all
+   of the 10,000-image batch (7.8 MB) in L2. Rosenblatt's tiled kernel already
+   ran its 100 MB/s port 67% full. Width without bandwidth would have bought
+   nothing; the profiling in section 4 shows exactly this, at small scale.
+5. **Specialized units.** cuBLAS uses tensor cores, which multiply small
+   matrix tiles per instruction rather than four bytes per lane. That is
+   another 1.7x at this batch size and 2.7x at 100,000 images. It is the same
+   step Rosenblatt took from `mad` to `dp4a`, taken several times further.
+
+None of the five is a trick on its own. More lanes need more bandwidth, more
+on-chip memory and more threads to hide latency, and a library that knows how
+to use all of them. NVIDIA's speed is the product of every layer of the stack
+being built for the others, from the process technology to cuBLAS. Rosenblatt
+needed the same things, in miniature: shared memory and coalescing to feed its
+lanes, warps to hide latency, a memory unit that can keep several loads in
+flight, a domain-specific instruction, and kernels written for all of it.
+
+## 7. What comes next
+
+In order of expected payoff, judged from the measurements above:
+
+1. **Run it on the board.** Check the printed PCB revision, connect US1, and
+   run `python fpga/bringup.py --port COM5` with the matching revision. The
+   script loads SRAM, verifies all global memory, and compares every network
+   layer with the reference on 20 test images.
+2. **A wider memory port.** The one-image kernel spends its time waiting on
+   one 4-byte request per cycle. Fetching 16 or 32 bytes per request, as real
+   GPUs do with 32-byte sectors, would let word-sized accesses coalesce too.
+3. **A register scoreboard.** Today a warp stops at every global load. If it
+   only stopped when an instruction actually needs the loaded register, one
+   warp could have several loads in flight and keep computing in between.
+   That is what NVIDIA's hardware does.
+4. **More warps per core.** Four warps hide an 8-cycle memory latency but not a
+   32-cycle one. Real SMs hold 48-64 warps.
+5. **A matrix instruction.** DP4A cut instructions by about 4x. A small
+   tensor-core-style instruction (for example a 4x4 int8 matrix times a 4x4
+   matrix per instruction across the warp) is the next step on the same path.
+
+### Tiny Tapeout
+
+[Tiny Tapeout](https://tinytapeout.com) builds small designs into real chips.
+A tile holds roughly 1,000 standard cells, or about 320 flip-flops if they are
+used as memory ([memory guide](https://tinytapeout.com/specs/memory/)). A
+synthesis of the smallest current configuration (1 core, 2 lanes, 2 warps,
+32-bit datapath, everything built from flip-flops) gives about 25,000 logic
+gates and 4,800 flip-flops, roughly 25-30 tiles. That is too big for a
+typical project, and most of it is register files and memories. A chip version would:
+
+- use a 16-bit datapath and 8 registers per thread;
+- keep program and data in external memory: the demo board's RP2040 can
+  emulate 64 KB of SPI RAM, and a QSPI Pmod adds PSRAM;
+- drop shared memory and DP4A in the first version.
+
+That should land around 6-10 tiles. Pricing has changed since 2025, so check
+the current shuttle on the Tiny Tapeout site.
+
+## Reproduce everything
+
+```bash
+python -m pip install -e ".[sim,ml,fpga]" pytest
+python ml/train.py                      # train + quantize (about 10 s)
+python -m pytest -q                     # emulator, RTL and UART tests
+python bench/profile_mnist.py           # the profiling study (about 30 min)
+python bench/report.py                  # tables and charts
+python fpga/build.py ulx3s-85f          # bitstream + timing report
+python cuda/run.py                      # the NVIDIA comparison (needs CUDA)
+```

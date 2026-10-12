@@ -8,10 +8,10 @@
 //   issue      takes one warp instruction and sends its requests, one per
 //              cycle (when the memory grants it). Coalescing: lanes are served
 //              lowest-first, and every waiting lane whose address falls in the
-//              same 32-bit word as the chosen lane rides along on the same
-//              request. 8 lanes reading 8 consecutive bytes cost 2 requests;
-//              8 lanes reading one address (broadcast) cost 1; 8 scattered
-//              bytes cost 8.
+//              same memory line (LINE bytes, one 32-bit word by default) as the
+//              chosen lane rides along on the same request. With 4-byte lines,
+//              8 lanes reading 8 consecutive bytes cost 2 requests; 8 lanes
+//              reading one address (broadcast) cost 1; 8 scattered bytes cost 8.
 //   in flight  up to DEPTH instructions whose requests are all sent wait here
 //              for their responses. The issue stage is free for the next
 //              instruction as soon as the last request of the previous one is
@@ -27,6 +27,7 @@ module rb_lsu #(
     parameter W       = 8,   // lanes (power of two, >= 2)
     parameter WB      = 2,   // warp-id bits
     parameter GMEM_AW = 16,  // global memory size, log2(words)
+    parameter LINE    = 4,   // bytes per memory request: 4, 8, 16 or 32
     parameter DEPTH   = 4    // instructions in flight (power of two, >= 1)
 ) (
     input  wire               clk,
@@ -53,23 +54,32 @@ module rb_lsu #(
     output wire               gm_req_valid,
     input  wire               gm_req_ready,
     output wire               gm_req_we,
-    output wire [GMEM_AW-1:0] gm_req_addr,
-    output reg  [31:0]        gm_req_wdata,
-    output reg  [3:0]         gm_req_wstrb,
+    output wire [GMEM_AW-$clog2(LINE/4)-1:0] gm_req_addr,   // line address
+    output reg  [LINE*8-1:0]  gm_req_wdata,
+    output reg  [LINE-1:0]    gm_req_wstrb,
     input  wire               gm_resp_valid,
-    input  wire [31:0]        gm_resp_rdata,
+    input  wire [LINE*8-1:0]  gm_resp_rdata,
     // performance event: a request was accepted by the memory
     output wire               ev_gm_req
 );
-    localparam LB = $clog2(W);
+    localparam LB  = $clog2(W);
+    localparam LWB = $clog2(LINE / 4);    // word-in-line bits
+    localparam LAW = GMEM_AW - LWB;       // line-address bits
+    localparam OB  = 2 + LWB;             // byte-in-line bits
     localparam QB = (DEPTH > 1) ? $clog2(DEPTH) : 1;   // slot index bits
     localparam FD = DEPTH * W;                         // response FIFO depth
     localparam FB = $clog2(FD) + 1;
 
-    function [31:0] extract(input [31:0] w, input [1:0] off, input [1:0] sz);
-        reg [7:0] b;
+    // the 32-bit word at byte offset `off` of a line, then sign/zero-extended for bytes
+    function [31:0] extract(input [LINE*8-1:0] line, input [OB-1:0] off, input [1:0] sz);
+        reg [7:0]  b;
+        reg [31:0] w;
+        integer    k;
         begin
-            case (off)
+            w = 32'd0;
+            for (k = 0; k < LINE / 4; k = k + 1)
+                if ((off >> 2) == k) w = line[k*32 +: 32];
+            case (off[1:0])
                 2'd0: b = w[7:0];
                 2'd1: b = w[15:8];
                 2'd2: b = w[23:16];
@@ -95,46 +105,40 @@ module rb_lsu #(
     wire [1:0] iu_size  = iu_op[1:0];   // 00 word, 01 signed byte, 10 unsigned byte
 
     // the lowest waiting lane leads the next request (constant-index loops only)
-    reg [GMEM_AW-1:0] lead_word;
+    reg [LAW-1:0] lead_line;
     always @* begin : p_lead
         integer i;
-        lead_word = {GMEM_AW{1'b0}};
+        lead_line = {LAW{1'b0}};
         for (i = W - 1; i >= 0; i = i - 1)
-            if (iu_pending[i]) lead_word = iu_addr[i*32+2 +: GMEM_AW];
+            if (iu_pending[i]) lead_line = iu_addr[i*32+OB +: LAW];
     end
 
     reg [W-1:0] served;   // lanes served by this request
     always @* begin : p_cover
         integer i;
         for (i = 0; i < W; i = i + 1)
-            served[i] = iu_pending[i] && (iu_addr[i*32+2 +: GMEM_AW] == lead_word);
+            served[i] = iu_pending[i] && (iu_addr[i*32+OB +: LAW] == lead_line);
     end
 
-    // merge the store data of all served lanes into one word
+    // merge the store data of all served lanes into one line, byte by byte
+    // (ascending lane order: the highest lane wins)
     always @* begin : p_merge
-        integer i;
-        gm_req_wdata = 32'd0;
-        gm_req_wstrb = 4'd0;
-        for (i = 0; i < W; i = i + 1) begin
-            if (served[i]) begin
-                if (iu_size == 2'b00) begin
-                    gm_req_wdata = iu_sdata[i*32 +: 32];
-                    gm_req_wstrb = 4'hF;
-                end else begin
-                    case (iu_addr[i*32 +: 2])
-                        2'd0: begin gm_req_wdata[7:0]   = iu_sdata[i*32 +: 8]; gm_req_wstrb[0] = 1'b1; end
-                        2'd1: begin gm_req_wdata[15:8]  = iu_sdata[i*32 +: 8]; gm_req_wstrb[1] = 1'b1; end
-                        2'd2: begin gm_req_wdata[23:16] = iu_sdata[i*32 +: 8]; gm_req_wstrb[2] = 1'b1; end
-                        default: begin gm_req_wdata[31:24] = iu_sdata[i*32 +: 8]; gm_req_wstrb[3] = 1'b1; end
-                    endcase
+        integer i, b;
+        gm_req_wdata = {LINE*8{1'b0}};
+        gm_req_wstrb = {LINE{1'b0}};
+        for (b = 0; b < LINE; b = b + 1)
+            for (i = 0; i < W; i = i + 1)
+                if (served[i] && (iu_size == 2'b00 ? (iu_addr[i*32 +: OB] >> 2) == (b >> 2)
+                                                   : iu_addr[i*32 +: OB] == b)) begin
+                    gm_req_wdata[b*8 +: 8] = (iu_size == 2'b00) ? iu_sdata[i*32 + (b % 4) * 8 +: 8]
+                                                                : iu_sdata[i*32 +: 8];
+                    gm_req_wstrb[b]        = 1'b1;
                 end
-            end
-        end
     end
 
     assign gm_req_valid = iu_busy && (|iu_pending);
     assign gm_req_we    = iu_store;
-    assign gm_req_addr  = lead_word;
+    assign gm_req_addr  = lead_line;
     wire   fire         = gm_req_valid && gm_req_ready;
     wire   last_fire    = fire && ((iu_pending & ~served) == {W{1'b0}});
 
@@ -194,7 +198,7 @@ module rb_lsu #(
                 q_rd[tail]     <= rd;
                 q_mask[tail]   <= mask;
                 q_size[tail]   <= op[1:0];
-                tail <= tail + 1'b1;
+                tail <= (tail == DEPTH - 1) ? {QB{1'b0}} : tail + 1'b1;   // wrap at DEPTH (DEPTH may be 1)
             end
             // ---- send requests
             if (fire) begin
@@ -220,7 +224,7 @@ module rb_lsu #(
             // ---- retire the oldest instruction
             if (retire) begin
                 q_valid[head] <= 1'b0;
-                head          <= head + 1'b1;
+                head          <= (head == DEPTH - 1) ? {QB{1'b0}} : head + 1'b1;
             end
             used <= used + accept - retire;
         end
@@ -230,10 +234,10 @@ module rb_lsu #(
     genvar gl;
     generate
         for (gl = 0; gl < W; gl = gl + 1) begin : g_lane
-            reg [1:0]  off [0:DEPTH-1];
-            reg [31:0] res [0:DEPTH-1];
+            reg [OB-1:0] off [0:DEPTH-1];
+            reg [31:0]   res [0:DEPTH-1];
             always @(posedge clk) begin
-                if (accept) off[tail] <= addr[gl*32 +: 2];
+                if (accept) off[tail] <= addr[gl*32 +: OB];
                 if (gm_resp_valid && r_lanes[gl])
                     res[r_slot] <= extract(gm_resp_rdata, off[r_slot], q_size[r_slot]);
             end
@@ -248,6 +252,8 @@ module rb_lsu #(
     initial begin
         if (DEPTH < 1 || (DEPTH & (DEPTH - 1)) != 0)
             $fatal(1, "rb_lsu: DEPTH must be a power of two");
+        if (LINE != 4 && LINE != 8 && LINE != 16 && LINE != 32)
+            $fatal(1, "rb_lsu: LINE must be 4, 8, 16 or 32 bytes");
     end
 `endif
 endmodule

@@ -15,7 +15,9 @@ the default build used for simulation has
 | `SMEM_AW` | 10 | 4 KiB of shared memory per core |
 | `GMEM_LATENCY` | 8 | cycles from a global-memory request to its data |
 | `GMEM_INTERVAL` | 1 | cycles between requests the memory accepts (bandwidth) |
+| `GMEM_LINE` | 4 | bytes one request moves: 4, 8, 16 or 32 (see below) |
 | `LSU_DEPTH` | 4 | global-memory instructions in flight per core |
+| `PARK` | 0 | 1 = a warp that finds the load/store unit busy sleeps instead of retrying (measured slower) |
 | `MUL_WIDTH` | 32 | 16 = only the low 16 bits of each operand are multiplied |
 | `ENABLE_DP4A` | 1 | packed int8 dot-product instruction |
 
@@ -37,7 +39,7 @@ the default build used for simulation has
    +--------------------+----------+  +-------------+-----------------+
                         |                          |
                   +-----+--------------------------+-----------+
-                  |  global memory: one 32-bit request/cycle, |
+                  |  global memory: one 4-byte request/cycle, |
                   |  round-robin between cores and the host   |
                   +--------------------------------------------+
 ```
@@ -61,8 +63,8 @@ The pipeline has four stages:
 | --- | --- |
 | S0 | the scheduler picks a ready warp, round robin; instruction fetch |
 | S1 | decode; all lanes read `rs1`, `rs2` and `rd` from their register files |
-| S2 | execute: ALUs, shared memory, branch/stack update, hand-off to the LSU |
-| S3 | write back results and shared-memory load data |
+| S2 | execute: ALUs (first half), shared memory, branch/stack update, hand-off to the LSU |
+| S3 | ALUs finish multiply-adds; write back results and shared-memory load data |
 
 A warp never has two instructions between S0 and S2, so there are no data
 hazards to detect and no forwarding paths. Instead the scheduler fills the
@@ -77,9 +79,13 @@ and `rd`, which is the accumulator of `mad`/`dp4a` and the data of stores);
 every write goes to all copies. Reads are synchronous, so the files map onto
 FPGA block RAM or LUT RAM.
 
-**ALUs** (`rb_alu.v`): one per lane, purely combinational: add/sub, logic,
-shifts, compares, min/max, a 32-bit (or 16-bit) multiplier shared by `mul` and
-`mad`, and the optional `dp4a` (four 8-bit multiplies and an adder tree).
+**ALUs** (`rb_alu.v`): one per lane: add/sub, logic, shifts, compares,
+min/max, a 32-bit (or 16-bit) multiplier shared by `mul` and `mad`, and the
+optional `dp4a` (four 8-bit multiplies and an adder tree). Multiplies are
+split over S2 and S3: S2 produces partial products, S3 adds them up. That
+put a register in the middle of the longest path in the design (register file
+-> DSP multiplier -> adder tree), and it costs nothing, because results are
+written back in S3 anyway.
 
 **Divergence**: a branch evaluates its condition in every active lane. If
 the lanes disagree, the warp continues with the fall-through lanes and pushes
@@ -113,17 +119,24 @@ lot of silicon is spent on routing.
 ## Global memory and the load/store unit (`rtl/rb_lsu.v`, `rtl/rb_gmem.v`)
 
 Global memory is one array shared by every core and the host, behind a
-round-robin arbiter. It accepts one 32-bit request every `GMEM_INTERVAL`
-cycles and returns read data `GMEM_LATENCY` cycles later, in order. On an FPGA
-it is block RAM; the extra latency stages model the DRAM a real GPU uses.
+round-robin arbiter. It accepts one request every `GMEM_INTERVAL` cycles and
+returns read data `GMEM_LATENCY` cycles later, in order. A request moves one
+aligned *line* of `GMEM_LINE` bytes: a single 32-bit word by default, or up to
+32 bytes, like the sectors of a real GPU's memory. Stores carry a byte mask, so
+a line write changes only the bytes the lanes wrote. On an FPGA the memory is
+block RAM; the extra latency stages model the DRAM a real GPU uses.
 
 Each core's load/store unit has two parts:
 
 1. **Issue**: takes one warp instruction and sends its requests, one per
-   cycle. Requests are *coalesced*: the lowest waiting lane picks a word, and
-   every lane whose address falls in that word is served by the same request.
-   Eight lanes reading eight consecutive bytes cost two requests; reading one
-   shared address costs one (broadcast); eight scattered addresses cost eight.
+   cycle. Requests are *coalesced*: the lowest waiting lane picks a line, and
+   every lane whose address falls in that line is served by the same request.
+   With 4-byte lines, eight lanes reading eight consecutive bytes cost two
+   requests; reading one shared address costs one (broadcast); eight
+   scattered addresses cost eight. With 32-byte lines, eight lanes reading
+   eight consecutive words cost one request, if the data is laid out so that
+   neighbouring lanes read neighbouring words (`ml/gpu.py`'s
+   `layout="interleaved"` does this for the weights).
 2. **In flight**: up to `LSU_DEPTH` instructions whose requests have all gone
    out wait for their data. Because the issue part is free as soon as the last
    request has left, several loads overlap in the memory pipeline
@@ -139,7 +152,8 @@ issue part busy is replayed.
 
 The 32-bit host bus is word addressed: global memory at `0x000000`,
 instruction memory at `0x100000` (write only, broadcast to every core) and
-control registers at `0x200000`. In simulation cocotb drives it directly; on
+control registers at `0x200000`. With wide memory lines, a host access moves
+one word of a line (writes use the byte mask). In simulation cocotb drives it directly; on
 an FPGA `rb_uart_bridge.v` turns serial frames into bus transactions
 (`docs/serial.md`). The Python `Device` class hides the difference:
 

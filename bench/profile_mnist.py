@@ -34,40 +34,49 @@ PER_IMAGE_COUNT = 4   # the per-image kernels cost the same for every image
 TILED_COUNT = 32      # 4 groups of 8 images x 2 neuron groups = 8 blocks
 
 
-def experiments() -> dict[str, tuple[dict, str, bool, int]]:
-    """name -> (Config overrides, workload, dp4a, images)"""
-    exp: dict[str, tuple[dict, str, bool, int]] = {}
+Spec = tuple[dict, str, bool, int, str]   # Config overrides, workload, dp4a, images, weight layout
+
+
+def experiments() -> dict[str, Spec]:
+    exp: dict[str, Spec] = {}
     # 1. four strategies on the default GPU (2 cores x 8 lanes x 4 warps)
     for workload, n in (("per_image", PER_IMAGE_COUNT), ("tiled", TILED_COUNT)):
         for dp4a in (False, True):
-            exp[f"{workload}_{'dp4a' if dp4a else 'scalar'}"] = ({}, workload, dp4a, n)
+            exp[f"{workload}_{'dp4a' if dp4a else 'scalar'}"] = ({}, workload, dp4a, n, "rows")
     # 2-4. how each DP4A strategy reacts to the memory system and to more cores
     for workload, n in (("per_image", PER_IMAGE_COUNT), ("tiled", TILED_COUNT)):
         for lat in (1, 4, 16, 32):
-            exp[f"latency{lat}_{workload}"] = ({"gmem_latency": lat}, workload, True, n)
+            exp[f"latency{lat}_{workload}"] = ({"gmem_latency": lat}, workload, True, n, "rows")
         for interval in (2, 4):
-            exp[f"interval{interval}_{workload}"] = ({"gmem_interval": interval}, workload, True, n)
+            exp[f"interval{interval}_{workload}"] = ({"gmem_interval": interval}, workload, True, n, "rows")
         for cores in (1, 4):
-            exp[f"cores{cores}_{workload}"] = ({"num_cores": cores}, workload, True, n)
+            exp[f"cores{cores}_{workload}"] = ({"num_cores": cores}, workload, True, n, "rows")
     # 5. fewer warps to hide latency (the tiled kernel needs all four)
-    exp["warps2_per_image"] = ({"num_warps": 2}, "per_image", True, PER_IMAGE_COUNT)
+    exp["warps2_per_image"] = ({"num_warps": 2}, "per_image", True, PER_IMAGE_COUNT, "rows")
     # 6. load/store unit design: one instruction in flight (the first design),
     #    and parking warps instead of letting them retry while it is busy
     for workload, n in (("per_image", PER_IMAGE_COUNT), ("tiled", TILED_COUNT)):
-        exp[f"lsu1_{workload}"] = ({"lsu_depth": 1}, workload, True, n)
-        exp[f"lsu1_park_{workload}"] = ({"lsu_depth": 1, "park": True}, workload, True, n)
-        exp[f"park_{workload}"] = ({"park": True}, workload, True, n)
+        exp[f"lsu1_{workload}"] = ({"lsu_depth": 1}, workload, True, n, "rows")
+        exp[f"lsu1_park_{workload}"] = ({"lsu_depth": 1, "park": True}, workload, True, n, "rows")
+        exp[f"park_{workload}"] = ({"park": True}, workload, True, n, "rows")
+    # 7. wider memory lines (one request moves 16 or 32 bytes), with the weights
+    #    row-major or interleaved so that a warp's lanes read neighbouring words
+    for workload, n in (("per_image", PER_IMAGE_COUNT), ("tiled", TILED_COUNT)):
+        exp[f"interleaved_{workload}"] = ({}, workload, True, n, "interleaved")
+        for line in (16, 32):
+            for layout in ("rows", "interleaved"):
+                exp[f"line{line}_{layout}_{workload}"] = ({"gmem_line_bytes": line}, workload, True, n, layout)
     return exp
 
 
-def run_one(name: str, spec: tuple[dict, str, bool, int]) -> dict:
-    overrides, workload, dp4a, count = spec
+def run_one(name: str, spec: Spec) -> dict:
+    overrides, workload, dp4a, count, layout = spec
     cfg = replace(Config(), **overrides)
     out = RESULTS / f"{name}.json"
     out.unlink(missing_ok=True)
     simrun.run(cfg, "cocotb_bench", {
         "RB_WORKLOAD": workload, "RB_DP4A": "1" if dp4a else "0", "RB_COUNT": str(count),
-        "RB_OUT": str(out),
+        "RB_LAYOUT": layout, "RB_OUT": str(out),
     }, build_tag=name)
     if not out.exists():
         raise RuntimeError(f"{name}: simulation produced no result (see build/sim/*_{name})")
@@ -82,8 +91,8 @@ def main() -> int:
     p.add_argument("--list", action="store_true")
     a = p.parse_args()
     if a.list:
-        for k, (ov, w, d, n) in exp.items():
-            print(f"{k:22s} {w:9s} dp4a={d!s:5} images={n:2d} {ov}")
+        for k, (ov, w, d, n, layout) in exp.items():
+            print(f"{k:28s} {w:9s} dp4a={d!s:5} images={n:2d} {layout:11s} {ov}")
         return 0
     names = a.only or list(exp)
     unknown = [n for n in names if n not in exp]
@@ -98,11 +107,11 @@ def main() -> int:
             n = futures[fut]
             try:
                 r = fut.result()
-                print(f"[{time.time() - start:6.0f}s] {n:22s} {r['cycles'] / r['count']:9.0f} cycles/image  "
+                print(f"[{time.time() - start:6.0f}s] {n:28s} {r['cycles'] / r['count']:9.0f} cycles/image  "
                       f"{r['correct']}/{r['count']} correct", flush=True)
             except Exception as e:  # keep going; report at the end
                 failures.append(n)
-                print(f"[{time.time() - start:6.0f}s] {n:22s} FAILED: {e}", flush=True)
+                print(f"[{time.time() - start:6.0f}s] {n:28s} FAILED: {e}", flush=True)
     if failures:
         print("failed:", " ".join(failures))
         return 1

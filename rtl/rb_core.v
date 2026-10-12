@@ -33,6 +33,7 @@ module rb_core #(
     parameter NW          = 4,    // warp slots (power of two, >= 2)
     parameter IMEM_AW     = 10,
     parameter GMEM_AW     = 16,
+    parameter GMEM_LINE   = 4,    // bytes per global-memory request
     parameter SMEM_AW     = 10,
     parameter STACK_DEPTH = 8,
     parameter MUL_WIDTH   = 32,
@@ -61,11 +62,11 @@ module rb_core #(
     output wire                       gm_req_valid,
     input  wire                       gm_req_ready,
     output wire                       gm_req_we,
-    output wire [GMEM_AW-1:0]         gm_req_addr,
-    output wire [31:0]                gm_req_wdata,
-    output wire [3:0]                 gm_req_wstrb,
+    output wire [GMEM_AW-$clog2(GMEM_LINE/4)-1:0] gm_req_addr,   // line address
+    output wire [GMEM_LINE*8-1:0]     gm_req_wdata,
+    output wire [GMEM_LINE-1:0]       gm_req_wstrb,
     input  wire                       gm_resp_valid,
-    input  wire [31:0]                gm_resp_rdata,
+    input  wire [GMEM_LINE*8-1:0]     gm_resp_rdata,
     // performance counters
     output wire [`RB_NUM_PERF*32-1:0] perf
 );
@@ -235,12 +236,13 @@ module rb_core #(
     // ======================================================= S2: execute
     wire [W-1:0]    M = amask[s2_warp];
     wire [W-1:0]    cond;       // per lane: rs1 != 0
-    wire [W*32-1:0] ex_result;  // per lane: value for rd
+    wire [W*32-1:0] ex_result;  // per lane: value for rd (li, lui, s2r; ALU results come in S3)
+    wire [W*32-1:0] alu_res;    // per lane: ALU result of the instruction now in S3
     wire [W*32-1:0] mem_addr;   // per lane: rs1 + imm
     wire [W*32-1:0] st_data;    // per lane: rd (store data)
 
     // ---- register-file write port (S3): instruction results, else a finished global load
-    reg             s3_alu_wr, s3_smem_wr;
+    reg             s3_alu_wr, s3_smem_wr, s3_is_alu;
     reg [WB-1:0]    s3_warp;
     reg [3:0]       s3_rd;
     reg [W-1:0]     s3_wmask;
@@ -251,7 +253,8 @@ module rb_core #(
     wire            lsu_wb_take = lsu_wb_valid && (!lsu_wb_load || !s3_writes);
     wire            rf_lsu_we   = lsu_wb_take && lsu_wb_load && lsu_wb_rd != 4'd0;
     wire [RFA-1:0]  rf_wa       = s3_writes ? {s3_warp, s3_rd} : {lsu_wb_warp, lsu_wb_rd};
-    wire [W*32-1:0] rf_wd       = s3_smem_wr ? smem_rdata : (s3_alu_wr ? s3_data : lsu_wb_data);
+    wire [W*32-1:0] rf_wd       = s3_smem_wr ? smem_rdata :
+                                  s3_alu_wr  ? (s3_is_alu ? alu_res : s3_data) : lsu_wb_data;
     wire [W-1:0]    rf_wmask    = s3_writes ? s3_wmask : (rf_lsu_we ? lsu_wb_mask : {W{1'b0}});
 
     wire [4:0] sr_sel = s2_imm18[4:0];
@@ -280,14 +283,16 @@ module rb_core #(
                 .qa(qa), .qb(qb), .qc(qc),
                 .we(rf_wmask[gl]), .wa(rf_wa), .wd(rf_wd[gl*32 +: 32])
             );
+            // two stages: operands in S2, result (alu_y) in S3
             rb_alu #(.MUL_WIDTH(MUL_WIDTH), .ENABLE_DP4A(ENABLE_DP4A)) u_alu (
-                .fn(s2_op[3:0]), .a(qa), .b(s2_imm ? s2_imm18 : qb), .c(qc), .y(alu_y)
+                .clk(clk), .fn(s2_op[3:0]), .a(qa), .b(s2_imm ? s2_imm18 : qb), .c(qc), .y(alu_y)
             );
             wire [31:0] tid = {{(32-WB-LB){1'b0}}, s2_warp, LANE};
             wire [31:0] srv = (sr_sel == `RB_SR_TID)    ? tid :
                               (sr_sel == `RB_SR_LANEID) ? {{(32-LB){1'b0}}, LANE} :
                               (sr_sel == `RB_SR_GTID)   ? base_q + tid : sr_shared;
-            assign ex_result[gl*32 +: 32] = s2_alu ? alu_y :
+            assign alu_res[gl*32 +: 32]   = alu_y;
+            assign ex_result[gl*32 +: 32] =
                                             s2_li  ? s2_imm22 :
                                             s2_lui ? {s2_imm22[21:0], 10'd0} : srv;
             assign cond[gl]              = qa != 32'd0;
@@ -441,6 +446,7 @@ module rb_core #(
         s3_rd      <= s2_rd;
         s3_wmask   <= is_shared ? smem_cov : M;
         s3_data    <= ex_result;
+        s3_is_alu  <= s2_alu;
     end
 
     // ============================================================ errors
@@ -454,7 +460,7 @@ module rb_core #(
     end
 
     // ============================================================== LSU
-    rb_lsu #(.W(W), .WB(WB), .GMEM_AW(GMEM_AW), .DEPTH(LSU_DEPTH)) u_lsu (
+    rb_lsu #(.W(W), .WB(WB), .GMEM_AW(GMEM_AW), .LINE(GMEM_LINE), .DEPTH(LSU_DEPTH)) u_lsu (
         .clk(clk), .rst(rst),
         .start(lsu_start), .op(s2_op), .warp(s2_warp), .rd(s2_rd), .mask(M),
         .addr(mem_addr), .sdata(st_data), .ready(lsu_ready), .idle(lsu_idle),

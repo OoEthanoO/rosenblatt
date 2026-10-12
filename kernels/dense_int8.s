@@ -1,11 +1,18 @@
 ; One thread computes one output of y = W*x + bias.
-; W is row-major signed int8; x is int8 in 0..127. Rows and x are padded
-; with zeros to a multiple of four bytes, for aligned DP4A loads.
+; x is int8 in 0..127, padded with zeros to a multiple of four bytes for
+; aligned DP4A loads. W is signed int8 in one of two layouts:
+;   INTERLEAVED 0  row-major, rows padded like x. The lanes of a warp read
+;                  words a whole row apart: one memory request each.
+;   INTERLEAVED 1  word k of neuron n at W + 4 * (k * NP + n), NP = output
+;                  count padded to a multiple of 8. The lanes of a warp read
+;                  neighbouring words, which a memory with wide lines
+;                  (GMEM_LINE) serves with one request. Needs DP4A.
 ;
-; Defines: DP4A (0/1), REQUANTIZE (0/1).
+; Defines: DP4A (0/1), REQUANTIZE (0/1), INTERLEAVED (0/1).
 ; REQUANTIZE stores clamp((y + 2^(shift-1)) >> shift, 0, 127) as bytes;
 ; otherwise stores signed int32 logits. Accumulators must not overflow.
-; args: x, W, bias, y, padded input width, output count, shift (1..31)
+; args: x, W, bias, y, padded input width, output count, shift (1..31),
+;       4 * NP (INTERLEAVED only)
 
 .alias neuron, r1
 .alias px,     r2
@@ -17,13 +24,19 @@
 .alias w,      r8
 .alias t,      r9
 .alias shift,  r10
+.alias wstep,  r11
 
         s2r   neuron, %gtid
         s2r   t, %arg5
         sltu  t, neuron, t
         if.nz t
             s2r   left, %arg4
+.if INTERLEAVED
+            shli  pw, neuron, 2
+            s2r   wstep, %arg7
+.else
             mul   pw, neuron, left
+.endif
             s2r   t, %arg1
             add   pw, pw, t
             s2r   px, %arg0
@@ -38,7 +51,11 @@ dot:
             ldw   w, [pw]
             dp4a  acc, x, w
             addi  px, px, 4
+.if INTERLEAVED
+            add   pw, pw, wstep
+.else
             addi  pw, pw, 4
+.endif
             subi  left, left, 4
 .else
             ldbu  x, [px]

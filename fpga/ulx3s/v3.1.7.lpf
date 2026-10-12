@@ -1,0 +1,3 @@
+# PCB v3.1.6/v3.1.7: https://github.com/emard/ulx3s/blob/master/doc/constraints/prototype/ulx3s_v316.lpf
+LOCATE COMP "wifi_gpio0" SITE "F1";
+IOBUF PORT "wifi_gpio0" PULLMODE=UP IO_TYPE=LVCMOS33 DRIVE=4;

@@ -3,13 +3,19 @@
 import os
 
 import cocotb
-from cocotb.task import bridge
+from cocotb.task import bridge, resume
 
 from uart_sim import BlockingSerial, SerialPins, reset
 from cocotb_gpu import compare, config_from_env
+from rosenblatt import isa
 from rosenblatt.device import Device, EmuBackend
 from rosenblatt.uart import UartBackend
 from scenarios import SCENARIOS
+
+
+@resume
+async def read_leds(dut) -> int:
+    return int(dut.user_leds.value)
 
 
 def run_serial(dut, pins):
@@ -22,6 +28,10 @@ def run_serial(dut, pins):
         dev.write(base, b"Z" * 32)
         dev.write(base + 3, bytes(range(23)))
         assert dev.read(base, 32) == b"Z" * 3 + bytes(range(23)) + b"Z" * 6
+        # the board LED register sits next to the GPU on the host bus
+        for value in (0x5A, 0x07):
+            backend.bus_write(isa.HOST_BOARD_BASE, [value])
+            assert read_leds(dut) == value
         for name in os.environ["RB_SCENARIOS"].split(","):
             expected = SCENARIOS[name](Device(EmuBackend(cfg)), 0)
             dev.reset_heap()

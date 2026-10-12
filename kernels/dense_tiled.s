@@ -12,19 +12,24 @@
 ; lanes of a warp read the same input word, so each read is a single
 ; broadcast wavefront.
 ;
-; Layouts (bytes): X is B x K (int8 0..127), W is NPAD x K row-major int8,
-; bias is NPAD int32, Y is B x NPAD (int8 when REQUANTIZE, else int32).
+; Layouts (bytes): X is B x K (int8 0..127), bias is NPAD int32, Y is B x NPAD
+; (int8 when REQUANTIZE, else int32). W is NPAD x K int8, either row-major
+; (INTERLEAVED 0: W[j][k] at j * K + k) or interleaved by words (INTERLEAVED 1:
+; W[j][k] at 4 * ((k / 4) * NPAD + j) + k % 4), where the lanes of a warp,
+; which work on neighbouring neurons, read neighbouring words.
 ; K is a multiple of KC and NPAD a multiple of THREADS (the host pads with zeros).
 ;
 ; Defines: THREADS, BT (images per block, <= 8), KC (bytes per stage, multiple of 4),
-;          LOG_NGROUPS (log2(NPAD / THREADS)), DP4A (0/1), REQUANTIZE (0/1)
-;          with THREADS == BT * KC / 4 (each thread stages one word).
+;          LOG_NGROUPS (log2(NPAD / THREADS)), DP4A (0/1), REQUANTIZE (0/1),
+;          INTERLEAVED (0/1), with THREADS == BT * KC / 4 (each thread stages one word).
 ; args:    %arg0 X, %arg1 W, %arg2 bias, %arg3 Y, %arg4 K, %arg5 NPAD, %arg6 shift
 ; grid:    (B / BT) * (NPAD / THREADS) blocks of THREADS threads
 
+.equ    NPAD, THREADS << LOG_NGROUPS
+
 .alias  w,    r1          ; weight word (or byte)
 .alias  x,    r2          ; input word (or byte)
-.alias  pw,   r3          ; &W[j][k0]
+.alias  pw,   r3          ; address of W[j][k0]
 .alias  gx,   r4          ; this thread's word of the next X tile in global memory
 .alias  left, r5          ; stages remaining
 .alias  t,    r6
@@ -39,9 +44,13 @@
         add   u, u, x                 ; u = j, this thread's neuron
         shri  t, t, LOG_NGROUPS
         muli  t, t, BT                ; t = b0, first image of the tile
-        ; pw = W + j * K
+        ; pw = &W[j][0]
         s2r   left, %arg4
+.if INTERLEAVED
+        shli  pw, u, 2
+.else
         mul   pw, u, left
+.endif
         s2r   w, %arg1
         add   pw, pw, w
         ; every accumulator starts at bias[j]
@@ -73,7 +82,11 @@ stage:  ; ---- 1. the block stages a BT x KC tile of X in shared memory
         bar
         ; ---- 2. multiply: weights from global, inputs from shared (broadcast)
 .rept   KC / 4, kw
-        ldw   w, [pw + kw * 4]        ; W[j][k0 + 4kw .. 4kw+3]
+.if INTERLEAVED
+        ldw   w, [pw + kw * 4 * NPAD] ; W[j][k0 + 4kw .. 4kw+3]
+.else
+        ldw   w, [pw + kw * 4]
+.endif
 .if DP4A
 .rept   BT, b
         lds   x, [r0 + b * KC + kw * 4]
@@ -90,7 +103,11 @@ stage:  ; ---- 1. the block stages a BT x KC tile of X in shared memory
 .endr
 .endif
 .endr
+.if INTERLEAVED
+        addi  pw, pw, KC * NPAD
+.else
         addi  pw, pw, KC
+.endif
         bar                           ; nobody overwrites the tile while it is read
         subi  left, left, 1
         bnz   left, stage

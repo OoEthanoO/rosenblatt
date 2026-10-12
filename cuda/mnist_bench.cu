@@ -51,8 +51,8 @@ __device__ __forceinline__ int requant(int acc, int shift) {
 // y[b][j] = bias[j] + sum_k x[b][k] * w[j][k]; one thread per output
 __global__ void dense_naive(const int8_t* x, const int8_t* w, const int* bias, void* y,
                             int batch, int k_in, int n_out, int ld_out, int shift) {
-    int j = blockIdx.x * blockDim.x + threadIdx.x;
-    int b = blockIdx.y;
+    int j = blockIdx.y * blockDim.x + threadIdx.x;   // gridDim.y is limited to 65535,
+    int b = blockIdx.x;                               // so the batch goes along x
     if (j >= n_out || b >= batch) return;
     const int8_t* xr = x + (size_t)b * k_in;
     const int8_t* wr = w + (size_t)j * k_in;
@@ -65,8 +65,8 @@ __global__ void dense_naive(const int8_t* x, const int8_t* w, const int* bias, v
 // ----------------------------------------------------------------- dp4a
 __global__ void dense_dp4a(const int8_t* x, const int8_t* w, const int* bias, void* y,
                            int batch, int k_in, int n_out, int ld_out, int shift) {
-    int j = blockIdx.x * blockDim.x + threadIdx.x;
-    int b = blockIdx.y;
+    int j = blockIdx.y * blockDim.x + threadIdx.x;   // gridDim.y is limited to 65535,
+    int b = blockIdx.x;                               // so the batch goes along x
     if (j >= n_out || b >= batch) return;
     const int* xr = reinterpret_cast<const int*>(x + (size_t)b * k_in);
     const int* wr = reinterpret_cast<const int*>(w + (size_t)j * k_in);
@@ -139,7 +139,7 @@ struct Buffers {
 static void run_method(const std::string& m, const Dims& d, const Buffers& g, cublasHandle_t blas) {
     if (m == "naive" || m == "dp4a") {
         auto kern = (m == "naive") ? dense_naive : dense_dp4a;
-        dim3 blk(64), g1((d.n_hid + 63) / 64, d.batch), g2((d.n_out + 63) / 64, d.batch);
+        dim3 blk(64), g1(d.batch, (d.n_hid + 63) / 64), g2(d.batch, (d.n_out + 63) / 64);
         kern<<<g1, blk>>>(g.x, g.w1, g.b1, g.h, d.batch, d.n_in, d.n_hid, d.n_hid, d.shift);
         kern<<<g2, blk>>>(g.h, g.w2, g.b2, g.out, d.batch, d.n_hid, d.n_out, d.n_out, 0);
     } else if (m == "tiled") {
@@ -207,15 +207,19 @@ int main(int argc, char** argv) {
 
     cublasHandle_t blas;
     CB(cublasCreate(&blas));
-    std::printf("{\"device\": \"%s\", \"sms\": %d, \"batch\": %d, \"upload_ms\": %.4f}\n",
-                prop.name, prop.multiProcessorCount, d.batch, upload_ms);
+    std::printf("{\"device\": \"%s\", \"sms\": %d, \"cc\": \"%d.%d\", \"l2_bytes\": %d, "
+                "\"smem_per_sm\": %zu, \"regs_per_sm\": %d, \"max_threads_per_sm\": %d, "
+                "\"mem_bus_bits\": %d, \"global_mem_bytes\": %zu, \"batch\": %d, \"upload_ms\": %.4f}\n",
+                prop.name, prop.multiProcessorCount, prop.major, prop.minor, prop.l2CacheSize,
+                prop.sharedMemPerMultiprocessor, prop.regsPerMultiprocessor, prop.maxThreadsPerMultiProcessor,
+                prop.memoryBusWidth, prop.totalGlobalMem, d.batch, upload_ms);
 
     for (std::string m : {"naive", "dp4a", "tiled", "cublas"}) {
         CK(cudaMemset(g.out, 0, (size_t)d.batch * d.n_out * 4));
         for (int i = 0; i < 3; ++i) run_method(m, d, g, blas);   // warm up
         CK(cudaDeviceSynchronize());
         CK(cudaGetLastError());
-        // repeat until at least 0.2 s of GPU time, take the mean
+        // repeat until at least 1 s of GPU time (long enough to sample the clock), take the mean
         int reps = 0;
         float total_ms = 0;
         CK(cudaEventRecord(e0));
@@ -225,7 +229,7 @@ int main(int argc, char** argv) {
             reps += 10;
             CK(cudaEventRecord(e1));
             CK(cudaEventSynchronize(e1));
-        } while (std::chrono::steady_clock::now() - start < std::chrono::milliseconds(200));
+        } while (std::chrono::steady_clock::now() - start < std::chrono::milliseconds(1000));
         CK(cudaEventElapsedTime(&total_ms, e0, e1));
         CK(cudaGetLastError());
         std::vector<int32_t> out((size_t)d.batch * d.n_out);

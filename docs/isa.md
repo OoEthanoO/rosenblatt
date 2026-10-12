@@ -1,7 +1,8 @@
 # Rosenblatt ISA
 
-Thirty-odd instructions, 32 bits each. Every thread has sixteen 32-bit
-registers (`r0` is always zero). The definitions live in one place,
+Fifty instructions, 32 bits each: sixteen ALU operations in register and
+immediate forms, ten loads and stores, and nine control instructions. Every
+thread has sixteen 32-bit registers (`r0` is always zero). The definitions live in one place,
 `sw/rosenblatt/isa.py`; the assembler, the emulator and the Verilog
 (`rtl/rb_isa.vh` is generated from it) all read them from there.
 

@@ -85,7 +85,7 @@ class BusBackend(Backend):
     def read_config(self) -> Config:
         c0, c1, c2, c3 = self.bus_read(isa.HOST_CSR_BASE + CSR.HWCFG0, 4)
         extra = {} if c3 == 0 else {"lsu_depth": c3 & 0xFF, "gmem_interval": c3 >> 8 & 0xFF,
-                                    "park": bool(c3 >> 16 & 0xFF)}
+                                    "park": bool(c3 >> 16 & 0xFF), "gmem_line_bytes": (c3 >> 24) or 4}
         return Config(**extra,
             num_lanes=c0 & 0xFF, num_warps=c0 >> 8 & 0xFF, num_cores=c0 >> 16 & 0xFF,
             imem_words=1 << (c1 & 0xFF), gmem_bytes=4 << (c1 >> 8 & 0xFF),
@@ -162,6 +162,11 @@ class Device:
         self.program: Program | None = None
 
     # ---- memory management (bump allocator; free everything with reset_heap)
+    @property
+    def memory_used(self) -> int:
+        """Bytes reserved by the allocator, including alignment padding."""
+        return self._heap
+
     def alloc(self, nbytes: int, align: int = 16) -> int:
         addr = (self._heap + align - 1) // align * align
         if addr + nbytes > self.cfg.gmem_bytes:

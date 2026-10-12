@@ -1,19 +1,32 @@
 # Rosenblatt
 
-A tiny SIMT GPU in Verilog, with a Python assembler, functional emulator,
-device runtime, and an int8 neural network. The default configuration has two
-cores, eight lanes per warp, four warps per core, 256 KiB of global memory,
-and 4 KiB of shared memory per core.
+A tiny GPU designed from scratch, and a neural network that runs on it.
 
-The digit classifier runs both dense layers and hidden-layer rounding,
-ReLU, and saturation as GPU instructions. Weights and intermediate activations
-stay in device memory. Python preprocesses pixels and chooses the largest
-output logit. The same runtime drives the emulator and the simulated RTL;
-running on a physical FPGA still needs a board integration and host transport.
+- **Hardware**: a SIMT GPU in Verilog: warps of 8 threads in lockstep, 4
+  warps per core interleaved to hide memory latency, a divergence stack,
+  banked shared memory, coalescing load/store units, and an int8
+  dot-product instruction (DP4A). The default build has 2 cores x 8 lanes x 4
+  warps, 256 KiB of global memory and 4 KiB of shared memory per core.
+- **Software**: an instruction set, an assembler, a reference emulator, and a
+  Python runtime that drives the emulator, the simulated Verilog, or an FPGA
+  over a serial link with the same calls.
+- **Network**: a 784-64-10 MLP trained in PyTorch and quantized to int8. It
+  recognizes 97.80% of the MNIST test digits; every layer, including rounding,
+  ReLU and saturation, runs as GPU instructions.
+- **FPGA**: targets the ULX3S ECP5-85F at 25 MHz, with 64 KiB of internal
+  global memory and a UART connection to the PC. The build checks routed
+  timing and records source/bitstream checksums. Both common PCB pinouts
+  are supported; physical-board testing is still pending.
+- **Profiling and comparison**: a cycle-accurate profiling study of the
+  network on the GPU, and the same network on an NVIDIA RTX 5080 for
+  comparison.
+
+**Read [docs/writeup.md](docs/writeup.md)** for the design decisions, the
+measurements, and why the RTX 5080 is so much faster.
 
 ## Run the digit demo
 
-From the repository root, using Python 3.10 or newer:
+From the repository root, with Python 3.10 or newer:
 
 ```powershell
 python -m venv .venv
@@ -21,73 +34,111 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m ml.demo --count 10
 ```
 
-On Linux/macOS, use `.venv/bin/python` in place of
-`.\.venv\Scripts\python.exe`.
+On Linux/macOS, use `.venv/bin/python` in place of `.\.venv\Scripts\python.exe`.
 
-The saved model in `ml/artifacts/mlp_int8.npz` needs only NumPy for inference.
-The demo downloads the MNIST test split into `data/mnist` if it is missing,
-checks the files' checksums, and reuses the cache on later runs. Each image's
-64 hidden activations and all ten logits must exactly match the independent
-NumPy reference before its prediction is printed.
+The saved model in `ml/artifacts/mlp_int8.npz` needs only NumPy. The demo
+downloads the MNIST test split into `data/mnist` if it is missing (checking
+checksums), runs each image on the emulator, and checks all 64 hidden
+activations and all 10 output scores against an independent NumPy reference
+before printing the prediction.
 
 ```powershell
-# Different test images
-.\.venv\Scripts\python.exe -m ml.demo --start 100 --count 20
-
-# The same model using scalar int8 multiply-adds
-.\.venv\Scripts\python.exe -m ml.demo --count 10 --scalar
+.\.venv\Scripts\python.exe -m ml.demo --start 100 --count 20   # other images
+.\.venv\Scripts\python.exe -m ml.demo --count 10 --scalar      # without DP4A
+.\.venv\Scripts\python.exe -m ml.demo --port COM5              # on a ULX3S board
 ```
 
-The first ten MNIST test images were all classified correctly in both modes.
-For those ten images, the emulator counted:
+Or draw your own digits with the mouse; the GPU recognizes them as you
+release the button and shows all ten scores and the 28x28 image it saw:
 
-| Kernel mode | Warp instructions | Global-memory word requests |
+```powershell
+.\.venv\Scripts\python.exe -m ml.draw                 # emulator
+.\.venv\Scripts\python.exe -m ml.draw --port COM5     # ULX3S; its LEDs show the answer too
+```
+
+The FPGA path is described in [docs/fpga.md](docs/fpga.md); `python
+fpga/bringup.py` takes a new board from "plugged in" to "recognizing digits"
+one checked step at a time.
+
+To prepare an 85F before it arrives:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[fpga]"
+.\.venv\Scripts\python.exe fpga/build.py ulx3s-85f
+.\.venv\Scripts\python.exe fpga/bringup.py --doctor
+```
+
+The default pinout is PCB v3.1.6/v3.1.7. For v2.x/v3.0.x, add
+`--revision 3.0` to the build and bring-up commands. Check the printed board
+revision before programming; the [FPGA guide](docs/fpga.md) covers US1,
+Windows drivers, reset, and the first hardware test. `--doctor` checks the
+software and bitstream without opening any USB or serial device.
+
+## Results
+
+Cycle-accurate simulation of the default GPU, real MNIST test images:
+
+| Strategy | Cycles per digit | Global memory requests per digit |
 | --- | ---: | ---: |
-| DP4A (four signed int8 products per instruction) | 114,710 | 144,040 |
-| Scalar int8 | 450,710 | 573,160 |
+| One image at a time (`kernels/dense_int8.s`), scalar | 70,324 | 57,316 |
+| One image at a time, DP4A | 17,796 | 14,404 |
+| Batched, shared-memory tiles (`kernels/dense_tiled.s`), DP4A | 3,139 | 2,100 |
 
-These are architectural event counts, not cycle counts or measured FPGA
-speedups. The demo reports accuracy for the selected sample only. The saved
-training report in `ml/artifacts/accuracy.txt` records 97.80% accuracy for the
-deployed int8 model on the full MNIST test set.
+Moving less data (shared memory) gained 5.7x and doing four multiplies per
+instruction (DP4A) gained 4x. The one-image kernel is limited by memory
+bandwidth, not arithmetic.
+
+The same network on an RTX 5080 Laptop GPU (`cuda/`), 10,000 images, every
+output score identical to the reference:
+
+| Method | ns per digit |
+| --- | ---: |
+| naive CUDA | 123.5 |
+| DP4A | 32.0 |
+| shared-memory tiles + DP4A | 7.2 |
+| cuBLAS int8 (tensor cores) | 4.1 |
+
+At 25 MHz on the FPGA, Rosenblatt's best kernel takes 125.6 microseconds per
+digit, 17,500 times slower than the RTX 5080 running the same algorithm. The
+write-up breaks that ratio down: 113x clock, 480x lanes, and utilization
+working in the other direction.
 
 ## Verification
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -e ".[sim]" pytest
-
-# Fast checks: no simulator, PyTorch, or dataset download needed
-.\.venv\Scripts\python.exe -m pytest tests/test_gpu_mlp.py -q
-
-# Full suite, including the Verilog simulations
-.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m pytest -m "not rtl" -q                             # fast, no simulator
+.\.venv\Scripts\python.exe -m pytest -q                                            # everything
 ```
 
-RTL tests require Icarus Verilog (`iverilog` and `vvp`) on `PATH`. The harness
-also detects an OSS CAD Suite installation at `~/tools/oss-cad-suite`, or at
-the directory specified by `OSS_CAD_SUITE`.
+RTL tests need Icarus Verilog (`iverilog`, `vvp`) on `PATH`. The harness also
+finds an OSS CAD Suite installation at `~/tools/oss-cad-suite` or at
+`$OSS_CAD_SUITE`.
 
-Tests compare emulator and RTL outputs and architectural counters across
-three hardware configurations. They cover vector addition, matrix multiply,
-divergence, memory access, barriers, and neural inference. The inference
-scenarios include a small network with padded dimensions and reused buffers,
-and the full trained 784 -> 64 -> 10 model on deterministic inputs. The small
-hardware configuration exercises the scalar fallback with a 16-bit multiplier.
-Additional emulator tests cover rounding, saturation, tied predictions,
-invalid inputs, and accumulator overflow rejection.
+Every scenario runs on the emulator and on the Verilog in four hardware
+configurations, and outputs *and* performance counters must agree exactly.
+Scenarios: vector addition, naive and tiled matrix multiply, a tree reduction,
+random ALU programs, random nested divergence with loops and early returns,
+every load/store flavour with coalescing and bank conflicts, and three neural
+network paths. The UART bridge is tested at the pin level, and the whole GPU
+runs the trained network through the simulated serial pins. The ULX3S board
+wrapper is also tested for startup, real serial timing, LED outputs, and
+reset/reconnection while a kernel and a partial serial packet are in flight.
 
 ## Source map
 
 | Path | Purpose |
 | --- | --- |
-| `rtl/` | GPU cores, ALUs, register files, memory, and host bus |
-| `sw/rosenblatt/` | ISA, assembler, emulator, and device runtime |
-| `kernels/` | Assembly kernels, including `dense_int8.s` |
-| `ml/gpu.py` | Upload the network and launch both layers on any `Device` |
-| `ml/qmlp.py` | Quantized model and independent NumPy reference |
-| `ml/demo.py` | Verified MNIST inference demo |
-| `ml/train.py` | PyTorch training and quantization |
-| `tests/` | Emulator checks and cocotb RTL comparisons |
+| `rtl/` | GPU cores, ALUs, register files, shared and global memory, UART bridge |
+| `sw/rosenblatt/` | ISA, assembler, emulator, runtime, serial driver |
+| `kernels/` | assembly kernels |
+| `ml/` | training, quantization, NumPy reference, GPU inference (`gpu.py`), demo |
+| `tests/` | emulator tests, cocotb RTL tests, UART tests |
+| `bench/` | profiling study on the RTL (`profile_mnist.py`, `report.py`, `results/`) |
+| `fpga/` | ULX3S top level, pin constraints, build script |
+| `cuda/` | the same network on an NVIDIA GPU |
+| `docs/` | [write-up](docs/writeup.md), [architecture](docs/architecture.md), [ISA](docs/isa.md), [FPGA](docs/fpga.md), [serial protocol](docs/serial.md) |
 
-To retrain, install the `ml` extra and run `python ml/train.py`. Training
-downloads the training split and replaces the artifacts in `ml/artifacts`.
+To retrain, install the `ml` extra and run `python ml/train.py` (about 10
+seconds on a laptop CPU). Training downloads the training split and replaces
+the artifacts in `ml/artifacts`.

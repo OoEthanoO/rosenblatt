@@ -1,10 +1,11 @@
-"""cocotb module for the profiling study (bench/profile.py drives it).
+"""cocotb module for the profiling study (bench/profile_mnist.py drives it).
 
 Runs one MNIST inference strategy on the simulated GPU, checks every logit
 against the NumPy reference, and writes the cycle counts and performance
 counters to the JSON file named by $RB_OUT.
 
     RB_WORKLOAD = per_image | tiled      RB_DP4A = 0 | 1      RB_COUNT = images
+    RB_LAYOUT = rows | interleaved (weight layout, default rows)
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ def run_bench(dut) -> dict:
     workload = os.environ["RB_WORKLOAD"]
     dp4a = os.environ.get("RB_DP4A", "1") == "1"
     count = int(os.environ["RB_COUNT"])
+    layout = os.environ.get("RB_LAYOUT", "rows")
     model = QuantMLP.load()
     data = mnist.load("test")
     q0 = preprocess(data["test_images"][:count])
@@ -36,7 +38,7 @@ def run_bench(dut) -> dict:
 
     runs = []
     if workload == "per_image":
-        gpu = GpuMLP(dev, model, dp4a=dp4a)
+        gpu = GpuMLP(dev, model, dp4a=dp4a, layout=layout)
         logits = []
         for i in range(count):
             res = gpu.run(q0[i])
@@ -44,7 +46,7 @@ def run_bench(dut) -> dict:
             runs += res.runs
         logits = np.array(logits)
     else:
-        res = BatchMLP(dev, model, batch=count, dp4a=dp4a).run(q0)
+        res = BatchMLP(dev, model, batch=count, dp4a=dp4a, layout=layout).run(q0)
         logits, runs = res.logits, res.runs
     np.testing.assert_array_equal(logits, model.logits(q0))
     correct = int((np.argmax(logits, axis=1) == data["test_labels"][:count]).sum())
@@ -55,7 +57,7 @@ def run_bench(dut) -> dict:
             for k, v in core.items():
                 totals[k] = totals.get(k, 0) + v
     return {
-        "workload": workload, "dp4a": dp4a, "count": count, "correct": correct,
+        "workload": workload, "dp4a": dp4a, "layout": layout, "count": count, "correct": correct,
         "config": json.loads(os.environ["RB_CONFIG"]),
         "cycles": sum(r.cycles for r in runs),
         "launch_cycles": [r.cycles for r in runs],
@@ -64,7 +66,7 @@ def run_bench(dut) -> dict:
     }
 
 
-@cocotb.test()
+@cocotb.test(timeout_time=500, timeout_unit="ms")   # 50M cycles: a hang fails instead of spinning
 async def bench(dut):
     await reset(dut)
     result = await bridge(run_bench)(dut)

@@ -33,7 +33,8 @@ module rb_gpu #(
     parameter GMEM_LATENCY  = 8,
     parameter GMEM_INTERVAL = 1,
     parameter LSU_DEPTH     = 4,
-    parameter PARK          = 0
+    parameter PARK          = 0,
+    parameter GMEM_LINE     = 4     // bytes per global-memory request: 4, 8, 16 or 32
 ) (
     input  wire        clk,
     input  wire        rst,
@@ -57,6 +58,11 @@ module rb_gpu #(
     localparam [7:0] P_MULW  = MUL_WIDTH,  P_STACK = STACK_DEPTH, P_LAT = GMEM_LATENCY;
     localparam [7:0] P_FEAT  = ENABLE_DP4A ? `RB_FEATURE_DP4A : 8'd0;
     localparam [7:0] P_LSUD  = LSU_DEPTH,  P_INTV  = GMEM_INTERVAL, P_PARK = PARK;
+    localparam [7:0] P_LINE  = GMEM_LINE;
+    localparam LWB  = $clog2(GMEM_LINE / 4);   // word-in-line bits
+    localparam LWB1 = (LWB > 0) ? LWB : 1;
+    localparam LAW  = GMEM_AW - LWB;           // line-address bits
+    localparam LBITS = GMEM_LINE * 8;
 
     // ================================================================ host bus
     wire h_gmem = host_addr[23:20] == 4'h0;
@@ -66,8 +72,11 @@ module rb_gpu #(
 
     reg  rd_pending;  // a global-memory read for the host is in flight
 
-    wire [NP-1:0] gm_ready, gm_resp_valid, gm_accepted;
-    wire [31:0]   gm_resp_rdata;
+    wire [NP-1:0]    gm_ready, gm_resp_valid, gm_accepted;
+    wire [LBITS-1:0] gm_resp_rdata;
+    // the host bus moves 32-bit words: which word of a line it addressed
+    wire [LWB1-1:0]  host_word = (LWB > 0) ? host_addr[LWB1-1:0] : {LWB1{1'b0}};
+    reg  [LWB1-1:0]  host_word_q;   // remembered for the read response
 
     wire hg_valid = host_valid && h_gmem && !rd_pending;
     assign host_ready = !rd_pending && (h_gmem ? gm_ready[HP] : 1'b1);
@@ -165,7 +174,7 @@ module rb_gpu #(
             `RB_CSR_HWCFG0:    csr_rdata = {`RB_HW_VERSION, P_CORES, P_WARPS, P_LANES};
             `RB_CSR_HWCFG1:    csr_rdata = {P_FEAT, P_SMEM, P_GMEM, P_IMEM};
             `RB_CSR_HWCFG2:    csr_rdata = {8'd0, P_MULW, P_STACK, P_LAT};
-            `RB_CSR_HWCFG3:    csr_rdata = {8'd0, P_PARK, P_INTV, P_LSUD};
+            `RB_CSR_HWCFG3:    csr_rdata = {P_LINE, P_PARK, P_INTV, P_LSUD};
             default: begin
                 for (k = 0; k < 8; k = k + 1)
                     if (csr_off == `RB_CSR_ARG0 + k) csr_rdata = args[k];
@@ -186,7 +195,10 @@ module rb_gpu #(
         end else begin
             host_rvalid <= 1'b0;
             if (h_fire && !host_we) begin
-                if (h_gmem) rd_pending <= 1'b1;
+                if (h_gmem) begin
+                    rd_pending  <= 1'b1;
+                    host_word_q <= host_word;
+                end
                 else begin
                     host_rvalid <= 1'b1;
                     host_rdata  <= h_csr ? csr_rdata : 32'd0;
@@ -195,7 +207,7 @@ module rb_gpu #(
             if (gm_resp_valid[HP]) begin
                 rd_pending  <= 1'b0;
                 host_rvalid <= 1'b1;
-                host_rdata  <= gm_resp_rdata;
+                host_rdata  <= gm_resp_rdata[host_word_q*32 +: 32];
             end
         end
     end
@@ -203,10 +215,10 @@ module rb_gpu #(
     // ============================================================= cores
     wire imem_we = h_fire && host_we && h_imem && !running;
 
-    wire [NP-1:0]         gm_valid, gm_we;
-    wire [NP*GMEM_AW-1:0] gm_addr;
-    wire [NP*32-1:0]      gm_wdata;
-    wire [NP*4-1:0]       gm_wstrb;
+    wire [NP-1:0]           gm_valid, gm_we;
+    wire [NP*LAW-1:0]       gm_addr;
+    wire [NP*LBITS-1:0]     gm_wdata;
+    wire [NP*GMEM_LINE-1:0] gm_wstrb;
 
     wire [8*32-1:0] args_flat = {args[7], args[6], args[5], args[4],
                                  args[3], args[2], args[1], args[0]};
@@ -216,7 +228,7 @@ module rb_gpu #(
         for (gc = 0; gc < NC; gc = gc + 1) begin : g_core
             rb_core #(
                 .CORE_ID(gc), .W(NUM_LANES), .NW(NUM_WARPS), .IMEM_AW(IMEM_AW),
-                .GMEM_AW(GMEM_AW), .SMEM_AW(SMEM_AW), .STACK_DEPTH(STACK_DEPTH),
+                .GMEM_AW(GMEM_AW), .GMEM_LINE(GMEM_LINE), .SMEM_AW(SMEM_AW), .STACK_DEPTH(STACK_DEPTH),
                 .MUL_WIDTH(MUL_WIDTH), .ENABLE_DP4A(ENABLE_DP4A),
                 .LSU_DEPTH(LSU_DEPTH), .PARK(PARK)
             ) u_core (
@@ -226,8 +238,8 @@ module rb_gpu #(
                 .ntid(ntid), .nctaid(grid), .args(args_flat), .clear(launch),
                 .idle(core_idle[gc]), .errors(core_err[gc*3 +: 3]),
                 .gm_req_valid(gm_valid[gc]), .gm_req_ready(gm_ready[gc]), .gm_req_we(gm_we[gc]),
-                .gm_req_addr(gm_addr[gc*GMEM_AW +: GMEM_AW]), .gm_req_wdata(gm_wdata[gc*32 +: 32]),
-                .gm_req_wstrb(gm_wstrb[gc*4 +: 4]),
+                .gm_req_addr(gm_addr[gc*LAW +: LAW]), .gm_req_wdata(gm_wdata[gc*LBITS +: LBITS]),
+                .gm_req_wstrb(gm_wstrb[gc*GMEM_LINE +: GMEM_LINE]),
                 .gm_resp_valid(gm_resp_valid[gc]), .gm_resp_rdata(gm_resp_rdata),
                 .perf(core_perf[gc*`RB_NUM_PERF*32 +: `RB_NUM_PERF*32])
             );
@@ -237,11 +249,12 @@ module rb_gpu #(
     // host port on the global memory
     assign gm_valid[HP]                    = hg_valid;
     assign gm_we[HP]                       = host_we;
-    assign gm_addr[HP*GMEM_AW +: GMEM_AW]  = host_addr[GMEM_AW-1:0];
-    assign gm_wdata[HP*32 +: 32]           = host_wdata;
-    assign gm_wstrb[HP*4 +: 4]             = 4'hF;
+    assign gm_addr[HP*LAW +: LAW]          = host_addr[GMEM_AW-1:LWB];
+    assign gm_wdata[HP*LBITS +: LBITS]     = {(GMEM_LINE/4){host_wdata}};
+    assign gm_wstrb[HP*GMEM_LINE +: GMEM_LINE] = {{(GMEM_LINE-4){1'b0}}, 4'hF} << (host_word * 4);
 
-    rb_gmem #(.NP(NP), .AW(GMEM_AW), .LATENCY(GMEM_LATENCY), .INTERVAL(GMEM_INTERVAL)) u_gmem (
+    rb_gmem #(.NP(NP), .AW(GMEM_AW), .LINE(GMEM_LINE), .LATENCY(GMEM_LATENCY),
+              .INTERVAL(GMEM_INTERVAL)) u_gmem (
         .clk(clk), .rst(rst),
         .req_valid(gm_valid), .req_ready(gm_ready), .req_we(gm_we), .req_addr(gm_addr),
         .req_wdata(gm_wdata), .req_wstrb(gm_wstrb),

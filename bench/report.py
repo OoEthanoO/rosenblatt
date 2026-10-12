@@ -84,6 +84,12 @@ def main() -> int:
                 "lsu1: one global memory instruction in flight per core (the first design); "
                 "park: warps sleep while the LSU is busy instead of retrying.")
     section("Warps per core (per_image)", ["warps2_per_image", "per_image_dp4a"])
+    for w in ("per_image", "tiled"):
+        section(f"Memory line size and weight layout ({w})",
+                [f"{w}_dp4a", f"interleaved_{w}"] +
+                [f"line{x}_{layout}_{w}" for x in (16, 32) for layout in ("rows", "interleaved")],
+                "lineN: one request moves an N-byte line (default 4); rows: weights row-major "
+                "(default); interleaved: neighbouring neurons' weight words side by side.")
     (RESULTS / "summary.md").write_text("\n".join(md) + "\n")
     print((RESULTS / "summary.md").read_text())
 
@@ -96,11 +102,13 @@ def main() -> int:
         return 0
     IMG.mkdir(parents=True, exist_ok=True)
     plt.rcParams.update({"font.size": 10, "axes.spines.top": False, "axes.spines.right": False})
+    from matplotlib.ticker import FuncFormatter
+    thousands = FuncFormatter(lambda v, _: f"{v:,.0f}")
     blue, orange, grey = "#2563eb", "#ea580c", "#9ca3af"
 
     # 1. strategies
-    names = [("per_image_scalar", "per image\nscalar"), ("per_image_dp4a", "per image\nDP4A"),
-             ("tiled_scalar", "tiled + shared\nscalar"), ("tiled_dp4a", "tiled + shared\nDP4A")]
+    names = [("per_image_scalar", "one image\nscalar"), ("per_image_dp4a", "one image\nDP4A"),
+             ("tiled_scalar", "tiled\nscalar"), ("tiled_dp4a", "tiled\nDP4A")]
     names = [(k, lab) for k, lab in names if k in m]
     if names:
         fig, ax = plt.subplots(1, 2, figsize=(9, 3.4))
@@ -113,6 +121,8 @@ def main() -> int:
         ax[1].set_xticks(list(xs), [lab for _, lab in names])
         ax[1].set_ylabel("global memory requests per image")
         ax[1].set_title("Data moved from global memory")
+        for a_ in ax:
+            a_.yaxis.set_major_formatter(thousands)
         fig.tight_layout()
         fig.savefig(IMG / "strategies.png", dpi=150)
         plt.close(fig)
@@ -137,7 +147,10 @@ def main() -> int:
     ax[1].set_ylabel("cycles per image")
     ax[1].set_title("Bandwidth")
     ax[1].set_xscale("log", base=2)
+    ax[1].set_xticks([1, 2, 4], ["1", "2", "4"])
     ax[1].legend(frameon=False)
+    for a_ in ax:
+        a_.yaxis.set_major_formatter(thousands)
     fig.tight_layout()
     fig.savefig(IMG / "memory_sensitivity.png", dpi=150)
     plt.close(fig)
@@ -151,6 +164,7 @@ def main() -> int:
             base = pts[0][1]
             ax.plot([c for c, _ in pts], [base / v for _, v in pts], marker="o", color=col, label=lab)
     ax.plot([1, 4], [1, 4], ls=":", color="#6b7280", label="ideal")
+    ax.set_xticks([1, 2, 4])
     ax.set_xlabel("cores")
     ax.set_ylabel("speedup over one core")
     ax.set_title("Adding cores")
@@ -158,6 +172,28 @@ def main() -> int:
     fig.tight_layout()
     fig.savefig(IMG / "core_scaling.png", dpi=150)
     plt.close(fig)
+
+    # 4. memory line size x weight layout
+    groups = [(4, "{w}_dp4a", "interleaved_{w}"), (16, "line16_rows_{w}", "line16_interleaved_{w}"),
+              (32, "line32_rows_{w}", "line32_interleaved_{w}")]
+    if all(k.format(w=w) in m for _, a, b in groups for k in (a, b) for w in ("per_image", "tiled")):
+        fig, ax = plt.subplots(1, 2, figsize=(9, 3.4))
+        for a_, (w, title) in zip(ax, (("per_image", "One image at a time"), ("tiled", "Tiled + shared memory"))):
+            xs = range(len(groups))
+            rows = [m[r.format(w=w)]["cycles_per_image"] for _, r, _ in groups]
+            inter = [m[i.format(w=w)]["cycles_per_image"] for _, _, i in groups]
+            a_.bar([x - 0.2 for x in xs], rows, width=0.4, color=grey, label="weights row-major")
+            a_.bar([x + 0.2 for x in xs], inter, width=0.4, color=blue, label="weights interleaved")
+            a_.set_xticks(list(xs), [f"{line} B" for line, _, _ in groups])
+            a_.set_xlabel("bytes per memory request (line size)")
+            a_.set_ylabel("cycles per image")
+            a_.set_title(title)
+            a_.yaxis.set_major_formatter(thousands)
+        handles, labels = ax[0].get_legend_handles_labels()
+        fig.legend(handles, labels, loc="upper center", ncol=2, frameon=False)
+        fig.tight_layout(rect=(0, 0, 1, 0.92))
+        fig.savefig(IMG / "memory_lines.png", dpi=150)
+        plt.close(fig)
     print(f"charts written to {IMG}")
     return 0
 

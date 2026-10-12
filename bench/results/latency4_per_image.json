@@ -1,0 +1,49 @@
+{
+  "workload": "per_image",
+  "dp4a": true,
+  "count": 4,
+  "correct": 4,
+  "config": {
+    "num_cores": 2,
+    "num_lanes": 8,
+    "num_warps": 4,
+    "imem_words": 1024,
+    "gmem_bytes": 262144,
+    "smem_bytes": 4096,
+    "stack_depth": 8,
+    "mul_width": 32,
+    "dp4a": true,
+    "gmem_latency": 4,
+    "gmem_interval": 1,
+    "lsu_depth": 4,
+    "park": false
+  },
+  "cycles": 71973,
+  "launch_cycles": [
+    17252,
+    742,
+    17252,
+    741,
+    17252,
+    741,
+    17252,
+    741
+  ],
+  "device_gmem_reqs": 57616,
+  "counters": {
+    "active": 140949,
+    "issued": 45884,
+    "lane_ops": 364040,
+    "idle": 38509,
+    "idle_mem": 30888,
+    "replays": 56556,
+    "gmem_instr": 12880,
+    "gmem_reqs": 57616,
+    "gmem_lanes": 102224,
+    "smem_instr": 0,
+    "smem_cycles": 0,
+    "lsu_busy": 128352,
+    "diverge": 4,
+    "blocks": 12
+  }
+}

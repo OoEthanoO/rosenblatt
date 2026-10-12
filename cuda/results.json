@@ -2,50 +2,64 @@
   "gpu": {
     "device": "NVIDIA GeForce RTX 5080 Laptop GPU",
     "sms": 60,
+    "cc": "12.0",
+    "l2_bytes": 50331648,
+    "smem_per_sm": 102400,
+    "regs_per_sm": 65536,
+    "max_threads_per_sm": 1536,
+    "mem_bus_bits": 256,
+    "global_mem_bytes": 17066033152,
     "batch": 10000,
-    "upload_ms": 0.7234
+    "upload_ms": 0.6939
   },
   "nvidia_smi": "NVIDIA GeForce RTX 5080 Laptop GPU, 3090, 14001, 617.42",
+  "clocks_during_run": {
+    "sm_mhz_load": 2827,
+    "sm_mhz_max": 2835,
+    "sm_mhz_median": 2505,
+    "mem_mhz_max": 14001,
+    "samples": 82
+  },
   "methods": [
     {
       "method": "naive",
-      "reps": 150,
-      "batch_ms": 1.41719,
-      "ns_per_image": 141.719,
+      "reps": 810,
+      "batch_ms": 1.23488,
+      "ns_per_image": 123.488,
       "bit_exact": true,
       "accuracy": 0.978,
-      "images_per_second": 7056216.87988202,
-      "tops": 0.7171374339361695
+      "images_per_second": 8097952.837522674,
+      "tops": 0.8230111427831045
     },
     {
       "method": "dp4a",
-      "reps": 600,
-      "batch_ms": 0.33427,
-      "ns_per_image": 33.427,
+      "reps": 3130,
+      "batch_ms": 0.31972,
+      "ns_per_image": 31.972,
       "bit_exact": true,
       "accuracy": 0.978,
-      "images_per_second": 29915936.21922398,
-      "tops": 3.040416429832171
+      "images_per_second": 31277367.69673464,
+      "tops": 3.1787814337545353
     },
     {
       "method": "tiled",
-      "reps": 2770,
-      "batch_ms": 0.07229,
-      "ns_per_image": 7.229,
+      "reps": 13950,
+      "batch_ms": 0.07172,
+      "ns_per_image": 7.172,
       "bit_exact": true,
       "accuracy": 0.978,
-      "images_per_second": 138331719.46327293,
-      "tops": 14.058929312491353
+      "images_per_second": 139431121.02621305,
+      "tops": 14.170663692136085
     },
     {
       "method": "cublas",
-      "reps": 4830,
-      "batch_ms": 0.04143,
-      "ns_per_image": 4.143,
+      "reps": 24110,
+      "batch_ms": 0.04149,
+      "ns_per_image": 4.149,
       "bit_exact": true,
       "accuracy": 0.978,
-      "images_per_second": 241370987.20733768,
-      "tops": 24.531016171856145
+      "images_per_second": 241021932.99590263,
+      "tops": 24.495541094239574
     }
   ],
   "ops_per_image": 101632

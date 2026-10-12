@@ -43,6 +43,7 @@ class Config:
     gmem_interval: int = 1      # cycles between accepted requests; timing only
     lsu_depth: int = 4          # global memory instructions in flight per core; timing only
     park: bool = False          # warps sleep (instead of retrying) while the LSU is busy; timing only
+    gmem_line_bytes: int = 4    # bytes per global-memory request (4, 8, 16 or 32); lanes in one line coalesce
 
     @property
     def max_threads(self) -> int:
@@ -64,6 +65,7 @@ class Config:
             "GMEM_INTERVAL": self.gmem_interval,
             "LSU_DEPTH": self.lsu_depth,
             "PARK": int(self.park),
+            "GMEM_LINE": self.gmem_line_bytes,
         }
 
 
@@ -388,7 +390,8 @@ class Emulator:
         else:
             st["gmem_instr"] += 1
             st["gmem_lanes"] += len(addrs)
-            st["gmem_reqs"] += len({word for _, word, _ in addrs})
+            words_per_line = cfg.gmem_line_bytes // 4   # one request per distinct line
+            st["gmem_reqs"] += len({word // words_per_line for _, word, _ in addrs})
             st["gmem_loads" if not store else "gmem_stores"] += 1
 
         if store:

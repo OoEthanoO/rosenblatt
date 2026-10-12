@@ -30,31 +30,34 @@ async def reset(dut, *, start_clock=True):
 
 
 class SerialPins:
-    def __init__(self, dut):
+    def __init__(self, dut, *, clk=None, rx=None, tx=None, period_ns=PERIOD_NS, baudrate=None):
         self.dut = dut
-        self.bit_ns = int(os.environ["RB_UART_CPB"]) * PERIOD_NS
+        self.clk = dut.clk if clk is None else clk
+        self.rx = dut.uart_rx if rx is None else rx
+        self.tx = dut.uart_tx if tx is None else tx
+        self.bit_ns = 1e9 / baudrate if baudrate else int(os.environ["RB_UART_CPB"]) * period_ns
         self.send_bit_ns = self.bit_ns
         self.received = Queue()
         cocotb.start_soon(self._receive())
 
     async def _receive(self):
         while True:
-            await FallingEdge(self.dut.uart_tx)
-            await Timer(self.bit_ns * 1.5, unit="ns")
+            await FallingEdge(self.tx)
+            await Timer(self.bit_ns * 1.5, unit="ns", round_mode="round")
             value = 0
             for bit in range(8):
-                value |= int(self.dut.uart_tx.value) << bit
-                await Timer(self.bit_ns, unit="ns")
-            assert int(self.dut.uart_tx.value) == 1, "invalid UART TX stop bit"
+                value |= int(self.tx.value) << bit
+                await Timer(self.bit_ns, unit="ns", round_mode="round")
+            assert int(self.tx.value) == 1, "invalid UART TX stop bit"
             self.received.put_nowait(value)
 
     async def send(self, data, *, stop_bit=1):
-        await FallingEdge(self.dut.clk)
+        await FallingEdge(self.clk)
         for value in data:
             for bit in [0] + [(value >> b) & 1 for b in range(8)] + [stop_bit]:
-                self.dut.uart_rx.value = bit
-                await Timer(self.send_bit_ns, unit="ns")
-        self.dut.uart_rx.value = 1
+                self.rx.value = bit
+                await Timer(self.send_bit_ns, unit="ns", round_mode="round")
+        self.rx.value = 1
 
     async def read(self, n):
         data = bytearray()

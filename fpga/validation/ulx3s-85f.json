@@ -1,0 +1,410 @@
+{
+  "recorded_utc": "2026-10-12T18:56:13.331089+00:00",
+  "board": "ULX3S ECP5-85F (LFE5U-85F-6BG381C)",
+  "physical_board_tested": false,
+  "builds": {
+    "3.0": {
+      "target": "ulx3s-85f",
+      "pcb_revision": "3.0",
+      "device": "85k",
+      "package": "CABGA381",
+      "speed_grade": "6",
+      "clock_mhz": 25,
+      "params": {
+        "CLK_HZ": 25000000,
+        "BAUD": 115200,
+        "NUM_CORES": 2,
+        "NUM_LANES": 8,
+        "NUM_WARPS": 4,
+        "GMEM_AW": 14,
+        "SMEM_AW": 10,
+        "IMEM_AW": 10,
+        "MUL_WIDTH": 32,
+        "ENABLE_DP4A": 1,
+        "GMEM_LATENCY": 8,
+        "GMEM_LINE": 4
+      },
+      "seed": 1,
+      "router": "router1",
+      "sources": {
+        "rtl/rb_gpu.v": "d814b36df68fe5d0f6ad2ab50384298a2f270a35ea40b9de54a851d375f52eab",
+        "rtl/rb_core.v": "2d2f0e3da01fc730c856d1c93735a887e0455cd1475b885071f824f662bbad56",
+        "rtl/rb_lsu.v": "e65f36bb9745086f61e26f8ebe6a6dcf00664513ef2147247dc7d1b2a27327f1",
+        "rtl/rb_smem.v": "23e74b1fa46de687ab82c1fef83bc2b6ce8b1ac620848ffc3092797e4fb01917",
+        "rtl/rb_alu.v": "7bf127b49d6c5f0213eedf8b5f41a5b37a961ad98d0667f47b5c80d09ee4308a",
+        "rtl/rb_regfile.v": "c05e9ee7346eb9cafb9cbb682e3f51e23b773505379500d809efa7fa7f1bda3e",
+        "rtl/rb_gmem.v": "dc285b1b6d05eb996a1f904d6febd599c0b080fd991315be9fdc595b69d3d175",
+        "rtl/rb_uart_rx.v": "c50eb9b4c2887f819cb3516bb7d603aacf05acab7abfd0b04b2411d40a12bf30",
+        "rtl/rb_uart_tx.v": "fe0209116768cecdd9a653b87ec6d367b0755716a3badb6fff5a1382917a80e9",
+        "rtl/rb_uart_bridge.v": "4b7399f9cbbd70a464c5997f0650ee69861e90d70d7e8029d3243da775c9a249",
+        "rtl/rb_serial_gpu.v": "8ea8a54800b1221bb0e1b989f9f754a62597dcdaf2035720708e4a942d1f84e5",
+        "rtl/rb_isa.vh": "4fe5bea858349ee9c85160a43574f0dd7eb08f28054240a7a20b0cbb82f3e822",
+        "fpga/ulx3s/top.v": "5a7b6131c0400f4bc9f7812bd4606cb6264f7c711f1e6d071594c820ce538693",
+        "fpga/ulx3s/ulx3s.lpf": "71ef2a2e0d7f9de4174e7da2e82bb22d4e5e726db0b78234dfbeb4f09dcfb629",
+        "fpga/ulx3s/v3.0.lpf": "3abae962e938c74b8bdf5298123fd8848733a130a93f8e65de8fda4fccc96f73",
+        "fpga/build.py": "f627884282ba75893ef34c089c77b61a7e8dba1011b7e1b76b333256bc68c793"
+      },
+      "started_utc": "2026-10-12T18:18:30.982017+00:00",
+      "status": "ready",
+      "tools": {
+        "yosys": "Yosys 0.69+274 (git sha1 7513f8df8, Release, GNU /usr/bin/x86_64-w64-mingw32-g++ 15.2.1)",
+        "nextpnr-ecp5": "\"nextpnr-ecp5\" -- Next Generation Place and Route (Version nextpnr-0.11.1-54-g861c57be)"
+      },
+      "synth_seconds": 60.4,
+      "cells": {
+        "CCU2C": 2473,
+        "DP16KD": 100,
+        "L6MUX21": 651,
+        "LUT4": 35910,
+        "MULT18X18D": 112,
+        "PFUMX": 5171,
+        "TRELLIS_DPR16X4": 440,
+        "TRELLIS_FF": 8366
+      },
+      "pnr_seconds": 2175.0,
+      "timing_passed": true,
+      "fmax_mhz": {
+        "$glbnet$clk_25mhz$TRELLIS_IO_IN": 37.02
+      },
+      "utilization": {
+        "DCCA": {
+          "available": 56,
+          "used": 1
+        },
+        "DP16KD": {
+          "available": 208,
+          "used": 100
+        },
+        "MULT18X18D": {
+          "available": 156,
+          "used": 112
+        },
+        "TRELLIS_COMB": {
+          "available": 83640,
+          "used": 44382
+        },
+        "TRELLIS_FF": {
+          "available": 83640,
+          "used": 8366
+        },
+        "TRELLIS_IO": {
+          "available": 365,
+          "used": 19
+        },
+        "TRELLIS_RAMW": {
+          "available": 10455,
+          "used": 440
+        }
+      },
+      "bitstream": "build/fpga/ulx3s-85f+pcb3.0/top.bit",
+      "bitstream_sha256": "2f5277038444643102fae7d1a45b9b5693149377d69a7c8225a8102301de7a4f",
+      "finished_utc": "2026-10-12T18:55:47.545726+00:00"
+    },
+    "3.1.7": {
+      "target": "ulx3s-85f",
+      "pcb_revision": "3.1.7",
+      "device": "85k",
+      "package": "CABGA381",
+      "speed_grade": "6",
+      "clock_mhz": 25,
+      "params": {
+        "CLK_HZ": 25000000,
+        "BAUD": 115200,
+        "NUM_CORES": 2,
+        "NUM_LANES": 8,
+        "NUM_WARPS": 4,
+        "GMEM_AW": 14,
+        "SMEM_AW": 10,
+        "IMEM_AW": 10,
+        "MUL_WIDTH": 32,
+        "ENABLE_DP4A": 1,
+        "GMEM_LATENCY": 8,
+        "GMEM_LINE": 4
+      },
+      "seed": 1,
+      "router": "router1",
+      "sources": {
+        "rtl/rb_gpu.v": "d814b36df68fe5d0f6ad2ab50384298a2f270a35ea40b9de54a851d375f52eab",
+        "rtl/rb_core.v": "2d2f0e3da01fc730c856d1c93735a887e0455cd1475b885071f824f662bbad56",
+        "rtl/rb_lsu.v": "e65f36bb9745086f61e26f8ebe6a6dcf00664513ef2147247dc7d1b2a27327f1",
+        "rtl/rb_smem.v": "23e74b1fa46de687ab82c1fef83bc2b6ce8b1ac620848ffc3092797e4fb01917",
+        "rtl/rb_alu.v": "7bf127b49d6c5f0213eedf8b5f41a5b37a961ad98d0667f47b5c80d09ee4308a",
+        "rtl/rb_regfile.v": "c05e9ee7346eb9cafb9cbb682e3f51e23b773505379500d809efa7fa7f1bda3e",
+        "rtl/rb_gmem.v": "dc285b1b6d05eb996a1f904d6febd599c0b080fd991315be9fdc595b69d3d175",
+        "rtl/rb_uart_rx.v": "c50eb9b4c2887f819cb3516bb7d603aacf05acab7abfd0b04b2411d40a12bf30",
+        "rtl/rb_uart_tx.v": "fe0209116768cecdd9a653b87ec6d367b0755716a3badb6fff5a1382917a80e9",
+        "rtl/rb_uart_bridge.v": "4b7399f9cbbd70a464c5997f0650ee69861e90d70d7e8029d3243da775c9a249",
+        "rtl/rb_serial_gpu.v": "8ea8a54800b1221bb0e1b989f9f754a62597dcdaf2035720708e4a942d1f84e5",
+        "rtl/rb_isa.vh": "4fe5bea858349ee9c85160a43574f0dd7eb08f28054240a7a20b0cbb82f3e822",
+        "fpga/ulx3s/top.v": "5a7b6131c0400f4bc9f7812bd4606cb6264f7c711f1e6d071594c820ce538693",
+        "fpga/ulx3s/ulx3s.lpf": "71ef2a2e0d7f9de4174e7da2e82bb22d4e5e726db0b78234dfbeb4f09dcfb629",
+        "fpga/ulx3s/v3.1.7.lpf": "1a2e18158017dafa433554f029a5b52c450356de4741b4217d4b5f42b3716f3f",
+        "fpga/build.py": "f627884282ba75893ef34c089c77b61a7e8dba1011b7e1b76b333256bc68c793"
+      },
+      "started_utc": "2026-10-12T18:18:30.982266+00:00",
+      "status": "ready",
+      "tools": {
+        "yosys": "Yosys 0.69+274 (git sha1 7513f8df8, Release, GNU /usr/bin/x86_64-w64-mingw32-g++ 15.2.1)",
+        "nextpnr-ecp5": "\"nextpnr-ecp5\" -- Next Generation Place and Route (Version nextpnr-0.11.1-54-g861c57be)"
+      },
+      "synth_seconds": 60.1,
+      "cells": {
+        "CCU2C": 2473,
+        "DP16KD": 100,
+        "L6MUX21": 651,
+        "LUT4": 35910,
+        "MULT18X18D": 112,
+        "PFUMX": 5171,
+        "TRELLIS_DPR16X4": 440,
+        "TRELLIS_FF": 8366
+      },
+      "pnr_seconds": 2002.7,
+      "timing_passed": true,
+      "fmax_mhz": {
+        "$glbnet$clk_25mhz$TRELLIS_IO_IN": 32.71
+      },
+      "utilization": {
+        "DCCA": {
+          "available": 56,
+          "used": 1
+        },
+        "DP16KD": {
+          "available": 208,
+          "used": 100
+        },
+        "MULT18X18D": {
+          "available": 156,
+          "used": 112
+        },
+        "TRELLIS_COMB": {
+          "available": 83640,
+          "used": 44382
+        },
+        "TRELLIS_FF": {
+          "available": 83640,
+          "used": 8366
+        },
+        "TRELLIS_IO": {
+          "available": 365,
+          "used": 19
+        },
+        "TRELLIS_RAMW": {
+          "available": 10455,
+          "used": 440
+        }
+      },
+      "bitstream": "build/fpga/ulx3s-85f/top.bit",
+      "bitstream_sha256": "5ca6210b7253590d6b630f744c47e653a054c542d88b0c6024933b17fe454c99",
+      "finished_utc": "2026-10-12T18:52:55.046282+00:00"
+    }
+  },
+  "tests": [
+    {
+      "name": "assembler, emulator, runtime, serial driver, build and preflight",
+      "result": "passed",
+      "tests": 105,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "reports": "build/fast-tests.xml",
+      "report_sha256": "f780333f29dcd44288dfefd6b2df9af2d9c6176696fb759e51e53cb0ad0e17f4",
+      "started": "2026-10-12T14:49:53.284798-04:00",
+      "seconds": 2.945,
+      "cases": [
+        "test_encodings_roundtrip_through_the_disassembler",
+        "test_field_layout",
+        "test_li_uses_one_or_two_words_and_is_exact[0-1]",
+        "test_li_uses_one_or_two_words_and_is_exact[-1-1]",
+        "test_li_uses_one_or_two_words_and_is_exact[2097151-1]",
+        "test_li_uses_one_or_two_words_and_is_exact[2097152-1]",
+        "test_li_uses_one_or_two_words_and_is_exact[305419896-2]",
+        "test_li_uses_one_or_two_words_and_is_exact[4294966272-1]",
+        "test_li_uses_one_or_two_words_and_is_exact[-2147483648-1]",
+        "test_forward_reference_li_keeps_addresses_stable",
+        "test_rept_if_and_computed_registers",
+        "test_defines_and_aliases",
+        "test_structured_if_else_and_loop_expand_to_ssy_sync",
+        "test_link_places_programs_and_exports_entries",
+        "test_errors_point_at_the_problem[add r1, r2-expects 3]",
+        "test_errors_point_at_the_problem[addi r1, r2, 200000-imm18 out of range]",
+        "test_errors_point_at_the_problem[ldw r1, r2-memory operand]",
+        "test_errors_point_at_the_problem[foo r1-unknown instruction]",
+        "test_errors_point_at_the_problem[s2r r1, %nope-special register]",
+        "test_errors_point_at_the_problem[bra nowhere-undefined symbol]",
+        "test_errors_point_at_the_problem[x: nop\\nx: nop-defined twice]",
+        "test_errors_point_at_the_problem[if.nz r1\\nnop-unterminated]",
+        "test_errors_point_at_the_problem[endif-without if]",
+        "test_errors_point_at_the_problem[.rept 2\\nx: nop\\n.endr-not allowed inside .rept]",
+        "test_errors_point_at_the_problem[addi r(16), r0, 1-r16 does not exist]",
+        "test_special_register_numbers_match_the_hardware_header",
+        "test_timing_is_required[report0-False]",
+        "test_timing_is_required[report1-False]",
+        "test_timing_is_required[report2-False]",
+        "test_timing_is_required[report3-True]",
+        "test_build_matches_revision_and_detects_stale_artifacts[3.0-L2]",
+        "test_build_matches_revision_and_detects_stale_artifacts[3.1.7-F1]",
+        "test_failed_rebuild_cannot_leave_an_old_bitstream[timing]",
+        "test_failed_rebuild_cannot_leave_an_old_bitstream[fail]",
+        "test_failed_rebuild_cannot_leave_an_old_bitstream[edit]",
+        "test_synthesis_only_invalidates_an_older_programming_image",
+        "test_invalid_board_overrides_fail_before_build[params0]",
+        "test_invalid_board_overrides_fail_before_build[params1]",
+        "test_invalid_board_overrides_fail_before_build[params2]",
+        "test_selecting_a_serial_port_is_unambiguous",
+        "test_programmer_selects_the_same_usb_device",
+        "test_missing_windows_programmer_runtime_has_an_actionable_error",
+        "test_doctor_checks_software_without_opening_hardware[False]",
+        "test_doctor_checks_software_without_opening_hardware[True]",
+        "test_random_network[0-cfg0]",
+        "test_random_network[0-cfg1]",
+        "test_random_network[0-cfg2]",
+        "test_random_network[1-cfg0]",
+        "test_random_network[1-cfg1]",
+        "test_random_network[1-cfg2]",
+        "test_random_network[2-cfg0]",
+        "test_random_network[2-cfg1]",
+        "test_random_network[2-cfg2]",
+        "test_rounding_saturation_and_argmax_ties[True]",
+        "test_rounding_saturation_and_argmax_ties[False]",
+        "test_trained_network_matches_both_paths",
+        "test_reject_invalid_input[bad_input0]",
+        "test_reject_invalid_input[bad_input1]",
+        "test_reject_invalid_input[bad_input2]",
+        "test_reject_invalid_input[bad_input3]",
+        "test_reject_invalid_shift[0]",
+        "test_reject_invalid_shift[32]",
+        "test_reject_invalid_shift[1.5]",
+        "test_reject_accumulator_overflow",
+        "test_reject_unsupported_dp4a",
+        "test_batched_tiled_network_matches_reference[True]",
+        "test_batched_tiled_network_matches_reference[False]",
+        "test_batched_kernel_cuts_global_memory_traffic",
+        "test_batched_needs_32_thread_blocks[cfg0]",
+        "test_batched_needs_32_thread_blocks[cfg1]",
+        "test_interleave_words_layout",
+        "test_reject_bad_layouts",
+        "test_wide_lines_pay_off_only_with_the_interleaved_layout",
+        "test_bringup_checks_pass_on_the_emulator[cfg0]",
+        "test_bringup_checks_pass_on_the_emulator[cfg1]",
+        "test_bringup_reports_the_failing_layer",
+        "test_drawing_is_normalized_like_mnist",
+        "test_drawn_strokes_are_recognized",
+        "test_drawing_checks_both_layers_before_showing_a_prediction[None]",
+        "test_drawing_checks_both_layers_before_showing_a_prediction[hidden]",
+        "test_drawing_checks_both_layers_before_showing_a_prediction[logits]",
+        "test_crc_known_check_value",
+        "test_discovery_and_unaligned_burst_roundtrip[1]",
+        "test_discovery_and_unaligned_burst_roundtrip[3]",
+        "test_discovery_and_unaligned_burst_roundtrip[4096]",
+        "test_sequence_wraps_and_stays_in_order",
+        "test_failed_write_is_never_retried[<lambda>-ProtocolError-CRC]",
+        "test_failed_write_is_never_retried[<lambda>-ProtocolError-framing]",
+        "test_failed_write_is_never_retried[<lambda>-ProtocolError-sequence]",
+        "test_failed_write_is_never_retried[<lambda>-ProtocolError-BUS_TIMEOUT]",
+        "test_failed_write_is_never_retried[<lambda>-ProtocolError-255]",
+        "test_failed_write_is_never_retried[<lambda>-ProtocolError-expected 0]",
+        "test_failed_write_is_never_retried[<lambda>-TimeoutError-timed out0]",
+        "test_failed_write_is_never_retried[<lambda>-TimeoutError-timed out1]",
+        "test_zero_progress_write_fails_connection",
+        "test_invalid_word_range_sends_nothing[-1-1]",
+        "test_invalid_word_range_sends_nothing[0--1]",
+        "test_invalid_word_range_sends_nothing[16777216-1]",
+        "test_invalid_word_range_sends_nothing[16777215-2]",
+        "test_device_memory_bounds_and_closed_connection",
+        "test_kernel_timeout_fails_connection",
+        "test_owned_serial_port_lifecycle[769]",
+        "test_owned_serial_port_lifecycle[770]",
+        "test_owned_serial_port_lifecycle[1]",
+        "test_demo_selects_discovered_scalar_core_and_closes_port"
+      ]
+    },
+    {
+      "name": "GPU configurations and UART faults/inference",
+      "result": "passed",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "reports": "build/rtl-regression-tests.xml",
+      "report_sha256": "5108d22a8da736fae4cf371ef743ea666afd70726560c2451f97be42ee967284",
+      "started": "2026-10-12T14:18:31.337264-04:00",
+      "seconds": 454.354,
+      "cases": [
+        "test_scenarios[default]",
+        "test_scenarios[small]",
+        "test_scenarios[busy_mem]",
+        "test_scenarios[wide_lines]",
+        "test_uart_bridge[4]",
+        "test_uart_bridge[9]",
+        "test_serial_gpu[packed]",
+        "test_serial_gpu[scalar]"
+      ]
+    },
+    {
+      "name": "85F wrapper, full network and reset recovery",
+      "result": "passed",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "reports": "build/ulx3s-network-tests.xml",
+      "report_sha256": "ebd2899c2bf16b4e8f37f1325176b5d62cb373ba481b4219f3b3c60e6eb0ee86",
+      "started": "2026-10-12T14:18:31.359276-04:00",
+      "seconds": 608.97,
+      "cases": [
+        "test_ulx3s[full_network]"
+      ]
+    },
+    {
+      "name": "85F wrapper, physical 115200 baud and reset recovery",
+      "result": "passed",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "reports": "build/sim/icarus_top_94a201efbc/results.xml",
+      "report_sha256": "a22213f2ab64338c050ec993eafef9d576f9cb0f6f2596fae47abb0eb2bf42e6",
+      "started": "2026-10-12T01:27:39.934597+00:00",
+      "seconds": 438.215,
+      "cases": [
+        "board"
+      ]
+    }
+  ],
+  "emulator_bringup": {
+    "command": "python fpga/bringup.py --emulator --images 20",
+    "result": "passed",
+    "global_memory_bytes": 65536,
+    "checks": [
+      "configuration",
+      "whole-memory random data",
+      "address lines",
+      "vector add",
+      "reduction",
+      "20 images: every hidden activation and output score bit-exact"
+    ],
+    "correct_predictions": 20
+  },
+  "drawing_demo": {
+    "mode": "hidden-window self-test on the emulator",
+    "result": "passed",
+    "checks": [
+      "vertical stroke recognized as 1",
+      "injected serial CRC failure exits with failure",
+      "injected hidden-layer mismatch exits with failure"
+    ]
+  },
+  "programmer_version": "ULX2S / ULX3S JTAG programmer v4.8 (git cc3ea93 built Jul 31 2026 04:48:12)",
+  "ftdi_runtime": {
+    "source_url": "https://ftdichip.com/wp-content/uploads/2025/03/CDM-v2.12.36.20-WHQL-Certified.zip",
+    "package_version": "2.12.36.20",
+    "archive_sha256": "e8ebf401d06994183694d78e5855ed5ab026bdfa8c3d4e4ccde09ec238a0eaf1",
+    "package_member": "amd64/FTD2XX64.dll",
+    "runtime_sha256": "52260f7751fbc545573ca29e4c27bfe005a97a98e9a7e5c28b77735568d6c5d5",
+    "signature_status": "Valid",
+    "verified_utc": "2026-10-12T18:33:38.8927853Z",
+    "verification": "fujprog -V succeeded; version 4.8, git cc3ea93. No system USB driver was installed."
+  },
+  "git_head": "d5462dbc9d1c2d52e3c8f9bb228b08271127192a",
+  "uncommitted_changes": true
+}

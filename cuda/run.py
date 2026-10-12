@@ -1,6 +1,7 @@
 """Run the digit network on the NVIDIA GPU and check it bit for bit.
 
-    python cuda/run.py            # full MNIST test set (10,000 images)
+    python cuda/run.py              # full MNIST test set (10,000 images)
+    python cuda/run.py --repeat 10  # the test set ten times over (100,000 images)
 
 Exports the int8 model and the test images, compiles mnist_bench.cu with nvcc
 (on Windows inside the Visual Studio build environment), runs it, compares
@@ -58,11 +59,16 @@ def compile_bench() -> Path:
 
 
 def main() -> int:
+    import argparse
+
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--repeat", type=int, default=1, help="batch = the test set repeated N times")
+    a = ap.parse_args()
     BUILD.mkdir(parents=True, exist_ok=True)
     model = QuantMLP.load()
     data = mnist.load("test")
-    q0 = preprocess(data["test_images"]).astype(np.int8)
-    labels = data["test_labels"]
+    q0 = np.tile(preprocess(data["test_images"]).astype(np.int8), (a.repeat, 1))
+    labels = np.tile(data["test_labels"], a.repeat)
     n_out_pad = 16
     dims = np.array([len(q0), q0.shape[1], model.w1.shape[0], model.w2.shape[0], n_out_pad, model.sh1],
                     dtype=np.int32)
@@ -74,7 +80,18 @@ def main() -> int:
     model.b2.astype(np.int32).tofile(BUILD / "b2.bin")
 
     exe = compile_bench()
+    # sample the real SM clock while the benchmark runs (not the advertised maximum)
+    sampler = subprocess.Popen(["nvidia-smi", "--query-gpu=clocks.sm,clocks.mem", "--format=csv,noheader,nounits",
+                                "-lms", "50"], stdout=subprocess.PIPE, text=True)
     p = subprocess.run([str(exe), str(BUILD)], capture_output=True, text=True)
+    sampler.terminate()
+    samples = [tuple(int(v) for v in line.split(",")) for line in sampler.communicate()[0].splitlines()
+               if line.count(",") == 1 and line.replace(",", "").replace(" ", "").isdigit()]
+    sm = [s for s, _ in samples if s > 0]
+    # the samples also cover setup and idle gaps; the 90th percentile is the clock under load
+    clocks = {"sm_mhz_load": int(np.percentile(sm, 90)) if sm else 0, "sm_mhz_max": max(sm, default=0),
+              "sm_mhz_median": int(np.median(sm)) if sm else 0,
+              "mem_mhz_max": max((m for _, m in samples), default=0), "samples": len(samples)}
     if p.returncode != 0:
         sys.exit(f"benchmark failed:\n{p.stdout}\n{p.stderr}")
     lines = [json.loads(line) for line in p.stdout.splitlines() if line.startswith("{")]
@@ -93,10 +110,13 @@ def main() -> int:
 
     smi = subprocess.run(["nvidia-smi", "--query-gpu=name,clocks.max.sm,clocks.max.mem,driver_version",
                           "--format=csv,noheader,nounits"], capture_output=True, text=True).stdout.strip()
-    result = {"gpu": header, "nvidia_smi": smi, "methods": methods,
+    result = {"gpu": header, "nvidia_smi": smi, "clocks_during_run": clocks, "methods": methods,
               "ops_per_image": 2 * int(model.w1.size + model.w2.size)}
-    (ROOT / "cuda" / "results.json").write_text(json.dumps(result, indent=2))
-    print(f"{header['device']} ({header['sms']} SMs); image upload for the whole batch: {header['upload_ms']:.3f} ms")
+    name = "results.json" if a.repeat == 1 else f"results_x{a.repeat}.json"
+    (ROOT / "cuda" / name).write_text(json.dumps(result, indent=2))
+    print(f"{header['device']} ({header['sms']} SMs), batch {header['batch']:,}; image upload "
+          f"{header['upload_ms']:.3f} ms; SM clock under load (90th percentile of {clocks['samples']} "
+          f"samples): {clocks['sm_mhz_load']} MHz, max {clocks['sm_mhz_max']} MHz")
     if not all(m["bit_exact"] for m in methods):
         print("ERROR: some method does not match the reference")
         return 1

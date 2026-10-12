@@ -435,7 +435,11 @@ class Assembler:
         if len(s.operands) != 2:
             raise AsmError("li takes a register and a value", s.lineno, s.text)
         v = self._value(s.operands[1], s, final=False)
-        return 1 if v is not None and isa.fits_signed(v, isa.IMM22_BITS) else 2
+        if v is None:  # forward reference: reserve the worst case
+            return 2
+        v &= isa.MASK32
+        # one word for a 22-bit signed value (li) or a value with zero low bits (lui)
+        return 1 if isa.fits_signed(isa.sext(v, 32), isa.IMM22_BITS) or v & 0x3FF == 0 else 2
 
     def assemble(self, source: str) -> Program:
         tree = _Macros().expand(_group(_parse(source)))

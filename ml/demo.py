@@ -13,7 +13,8 @@ from pathlib import Path
 
 import numpy as np
 
-from rosenblatt.device import Device, EmuBackend
+from rosenblatt import isa
+from rosenblatt.device import BusBackend, Device, EmuBackend
 from rosenblatt.uart import UartBackend
 
 from . import mnist
@@ -68,6 +69,8 @@ def run_demo(gpu: GpuMLP, model: QuantMLP, data: dict[str, np.ndarray],
         instructions += sum(run.stats["instructions"] for run in result.runs)
         requests += sum(run.stats["gmem_reqs"] for run in result.runs)
         cycles += sum(run.cycles or 0 for run in result.runs)
+        if isinstance(gpu.device.backend, BusBackend):   # on a board: show the digit on its LEDs
+            gpu.device.backend.bus_write(isa.HOST_BOARD_BASE, [result.prediction])
         print(f"{i:5d}  {label:5d}  {result.prediction:10d}  {'yes' if match else 'no'}")
     print(f"Exact NumPy matches: {count}/{count} (hidden activations and all logits)")
     print(f"Sample accuracy: {correct}/{count} ({correct / count:.1%})")

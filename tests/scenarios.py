@@ -431,7 +431,8 @@ def matmul_tiled(dev: Device, seed: int) -> Outcome:
 
 
 def mlp_int8(dev: Device, seed: int) -> Outcome:
-    """Two dense layers, padding, partial warps, and reusable device buffers."""
+    """Two dense layers, padding, partial warps, and reusable device buffers;
+    both weight layouts when the device has DP4A."""
     from ml.gpu import GpuMLP
     from ml.qmlp import QuantMLP
 
@@ -442,16 +443,19 @@ def mlp_int8(dev: Device, seed: int) -> Outcome:
         rng.integers(-128, 128, (10, 13), dtype=np.int16).astype(np.int8),
         rng.integers(-1000, 1000, 10, dtype=np.int32),
     )
-    gpu = GpuMLP(dev, model)
+    gpus = {"": GpuMLP(dev, model)}
+    if dev.cfg.dp4a:
+        gpus["il_"] = GpuMLP(dev, model, layout="interleaved")
     outcome = Outcome()
     for i, q0 in enumerate((np.zeros(7, dtype=np.int32), rng.integers(0, 128, 7, dtype=np.int32))):
-        result = gpu.run(q0)
-        np.testing.assert_array_equal(result.hidden, model.hidden(q0))
-        np.testing.assert_array_equal(result.logits, model.logits(q0))
-        assert result.prediction == int(np.argmax(model.logits(q0)))
-        outcome.outputs[f"hidden_{i}"] = result.hidden
-        outcome.outputs[f"logits_{i}"] = result.logits
-        outcome.runs.extend(result.runs)
+        for tag, gpu in gpus.items():
+            result = gpu.run(q0)
+            np.testing.assert_array_equal(result.hidden, model.hidden(q0))
+            np.testing.assert_array_equal(result.logits, model.logits(q0))
+            assert result.prediction == int(np.argmax(model.logits(q0)))
+            outcome.outputs[f"{tag}hidden_{i}"] = result.hidden
+            outcome.outputs[f"{tag}logits_{i}"] = result.logits
+            outcome.runs.extend(result.runs)
     return outcome
 
 
@@ -469,7 +473,8 @@ def mlp_trained(dev: Device, seed: int) -> Outcome:
 
 
 def mlp_tiled(dev: Device, seed: int) -> Outcome:
-    """Batched, shared-memory tiled inference (BatchMLP) with padded odd sizes.
+    """Batched, shared-memory tiled inference (BatchMLP) with padded odd sizes,
+    with and without DP4A, and both weight layouts.
 
     Only meaningful on devices with 32-thread blocks; elsewhere it does nothing.
     """
@@ -493,6 +498,10 @@ def mlp_tiled(dev: Device, seed: int) -> Outcome:
         np.testing.assert_array_equal(res.logits, model.logits(q0))
         outcome.outputs[f"logits_{int(dp4a)}"] = res.logits
         outcome.runs.extend(res.runs)
+    res = BatchMLP(dev, model, batch=11, dp4a=dev.cfg.dp4a, layout="interleaved").run(q0)
+    np.testing.assert_array_equal(res.logits, model.logits(q0))
+    outcome.outputs["logits_interleaved"] = res.logits
+    outcome.runs.extend(res.runs)
     return outcome
 
 

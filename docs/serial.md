@@ -8,7 +8,10 @@ emulator or the simulated RTL.
 
 The bus is word addressed (24-bit word addresses). The address map is the same
 as everywhere else (`isa.HOST_*_BASE`): global memory from `0x000000`,
-instruction memory from `0x100000`, control registers from `0x200000`.
+instruction memory from `0x100000`, control registers from `0x200000`. On the
+FPGA builds one more word sits outside the GPU: writing `0x300000` sets the
+board's LED register (`rb_serial_gpu.user_leds`; the ULX3S shows bits 0-3 on
+LEDs 3-6).
 
 ## Frames
 

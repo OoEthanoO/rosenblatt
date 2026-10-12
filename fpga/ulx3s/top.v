@@ -8,6 +8,7 @@
 //   LED 0   kernel running (rb_gpu busy)
 //   LED 1   serial data arriving from the PC
 //   LED 2   serial data going to the PC
+//   LED 3-6 a 4-bit value from the PC (the demo shows the recognized digit)
 //   LED 7   heartbeat (about 1.5 Hz): the clock is running
 //   FIRE1   reset the GPU (also needed after a serial protocol error)
 `default_nettype none
@@ -23,7 +24,8 @@ module top #(
     parameter IMEM_AW       = 10,
     parameter MUL_WIDTH     = 32,
     parameter ENABLE_DP4A   = 1,
-    parameter GMEM_LATENCY  = 8
+    parameter GMEM_LATENCY  = 8,
+    parameter GMEM_LINE     = 4             // bytes per global-memory request
 ) (
     input  wire       clk_25mhz,
     input  wire [6:0] btn,         // btn[1] = FIRE1 (active high)
@@ -34,33 +36,41 @@ module top #(
 );
     wire clk = clk_25mhz;
 
-    // ---- reset: held for 2^16 cycles after configuration, and while FIRE1 is down
+    // Synchronize the physical button, then hold reset for 2^16 clocks after
+    // its last sampled assertion (2.62 ms at 25 MHz). Release is synchronous.
+    (* async_reg = "true" *) reg [1:0] button_sync = 2'b11;
     reg [15:0] por = 16'd0;
     reg        rst = 1'b1;
     always @(posedge clk) begin
-        if (!(&por)) por <= por + 1'b1;
-        rst <= !(&por) || btn[1];
+        button_sync <= {button_sync[0], btn[1]};
+        if (button_sync[1]) por <= 16'd0;
+        else if (!(&por)) por <= por + 1'b1;
+        rst <= !(&por) || button_sync[1];
     end
 
-    wire busy;
+    wire       busy;
+    wire [7:0] user_leds;
     rb_serial_gpu #(
         .NUM_CORES(NUM_CORES), .NUM_LANES(NUM_LANES), .NUM_WARPS(NUM_WARPS),
         .IMEM_AW(IMEM_AW), .GMEM_AW(GMEM_AW), .SMEM_AW(SMEM_AW),
         .MUL_WIDTH(MUL_WIDTH), .ENABLE_DP4A(ENABLE_DP4A), .GMEM_LATENCY(GMEM_LATENCY),
-        .CLKS_PER_BIT(CLK_HZ / BAUD)
+        .GMEM_LINE(GMEM_LINE), .CLKS_PER_BIT((CLK_HZ + BAUD / 2) / BAUD)
     ) u_gpu (
-        .clk(clk), .rst(rst), .uart_rx(ftdi_txd), .uart_tx(ftdi_rxd), .busy(busy)
+        .clk(clk), .rst(rst), .uart_rx(ftdi_txd), .uart_tx(ftdi_rxd), .busy(busy),
+        .user_leds(user_leds)
     );
 
     // ---- LEDs: stretch short serial pulses so they are visible
     reg [23:0] beat = 24'd0;
     reg [19:0] rx_seen = 20'd0, tx_seen = 20'd0;
+    (* async_reg = "true" *) reg [1:0] rx_sync = 2'b11;
     always @(posedge clk) begin
+        rx_sync <= {rx_sync[0], ftdi_txd};
         beat    <= beat + 1'b1;
-        rx_seen <= !ftdi_txd ? 20'hFFFFF : (rx_seen != 0 ? rx_seen - 1'b1 : 20'd0);
+        rx_seen <= !rx_sync[1] ? 20'hFFFFF : (rx_seen != 0 ? rx_seen - 1'b1 : 20'd0);
         tx_seen <= !ftdi_rxd ? 20'hFFFFF : (tx_seen != 0 ? tx_seen - 1'b1 : 20'd0);
     end
-    assign led        = {beat[23], 4'd0, tx_seen != 0, rx_seen != 0, busy};
+    assign led        = {beat[23], user_leds[3:0], tx_seen != 0, rx_seen != 0, busy};
     assign wifi_gpio0 = 1'b1;
 endmodule
 
