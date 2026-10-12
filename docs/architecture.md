@@ -88,6 +88,12 @@ put a register in the middle of the longest path in the design (register file
 -> DSP multiplier -> adder tree), and it costs nothing, because results are
 written back in S3 anyway.
 
+`dp4ab` (same option) hands every lane's dot-product unit one lane's `rs1`
+through a single 8-to-1 multiplexer per core. The multiplexer feeds only the
+four 8-bit multipliers, through their own operand input (`a_dot`): wired to
+the ALU's general input, synthesis copied it into every lane's adders and
+shifters, and the GPU grew by a fifth instead of 4%.
+
 **Divergence**: a branch evaluates its condition in every active lane. If
 the lanes disagree, the warp continues with the fall-through lanes and pushes
 `{target, taken lanes}`; `sync` later pops it and runs the deferred lanes.

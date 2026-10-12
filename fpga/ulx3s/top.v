@@ -26,7 +26,8 @@ module top #(
     parameter ENABLE_DP4A   = 1,
     parameter GMEM_LATENCY  = 8,
     parameter GMEM_LINE     = 4,            // bytes per global-memory request
-    parameter SCOREBOARD    = 0             // 1: loads stall only the instructions that need them
+    parameter SCOREBOARD    = 0,            // 1: loads stall only the instructions that need them
+    parameter LSU_DEPTH     = 4             // global-memory instructions in flight per core
 ) (
     input  wire       clk_25mhz,
     input  wire [6:0] btn,         // btn[1] = FIRE1 (active high)
@@ -55,7 +56,8 @@ module top #(
         .NUM_CORES(NUM_CORES), .NUM_LANES(NUM_LANES), .NUM_WARPS(NUM_WARPS),
         .IMEM_AW(IMEM_AW), .GMEM_AW(GMEM_AW), .SMEM_AW(SMEM_AW),
         .MUL_WIDTH(MUL_WIDTH), .ENABLE_DP4A(ENABLE_DP4A), .GMEM_LATENCY(GMEM_LATENCY),
-        .GMEM_LINE(GMEM_LINE), .SCOREBOARD(SCOREBOARD), .CLKS_PER_BIT((CLK_HZ + BAUD / 2) / BAUD)
+        .GMEM_LINE(GMEM_LINE), .SCOREBOARD(SCOREBOARD), .LSU_DEPTH(LSU_DEPTH),
+        .CLKS_PER_BIT((CLK_HZ + BAUD / 2) / BAUD)
     ) u_gpu (
         .clk(clk), .rst(rst), .uart_rx(ftdi_txd), .uart_tx(ftdi_rxd), .busy(busy),
         .user_leds(user_leds)

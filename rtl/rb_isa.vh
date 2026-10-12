@@ -38,6 +38,7 @@
 `define RB_OP_SYNC   6'h37
 `define RB_OP_BAR    6'h38
 `define RB_OP_RET    6'h39
+`define RB_OP_DP4AB  6'h3A
 
 `define RB_SR_TID    5'd0
 `define RB_SR_NTID   5'd1

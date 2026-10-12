@@ -34,7 +34,7 @@ PER_IMAGE_COUNT = 4   # the per-image kernels cost the same for every image
 TILED_COUNT = 32      # 4 groups of 8 images x 2 neuron groups = 8 blocks
 
 
-Spec = tuple   # (Config overrides, workload, dp4a, images, weight layout[, loop unroll])
+Spec = tuple   # (Config overrides, workload, dp4a, images, weight layout[, kernel options])
 
 
 def experiments() -> dict[str, Spec]:
@@ -51,8 +51,11 @@ def experiments() -> dict[str, Spec]:
             exp[f"interval{interval}_{workload}"] = ({"gmem_interval": interval}, workload, True, n, "rows")
         for cores in (1, 4):
             exp[f"cores{cores}_{workload}"] = ({"num_cores": cores}, workload, True, n, "rows")
-    # 5. fewer warps to hide latency (the tiled kernel needs all four)
+    # 5. fewer warps to hide latency (the tiled kernel needs all four); with the
+    #    scoreboard each warp hides some of its own latency
     exp["warps2_per_image"] = ({"num_warps": 2}, "per_image", True, PER_IMAGE_COUNT, "rows")
+    exp["scoreboard_warps2_per_image"] = ({"num_warps": 2, "scoreboard": True}, "per_image", True,
+                                          PER_IMAGE_COUNT, "rows")
     # 6. load/store unit design: one instruction in flight (the first design),
     #    and parking warps instead of letting them retry while it is busy
     for workload, n in (("per_image", PER_IMAGE_COUNT), ("tiled", TILED_COUNT)):
@@ -75,25 +78,37 @@ def experiments() -> dict[str, Spec]:
     # 9. the one-image loop unrolled by two: fewer instructions, and with the
     #    scoreboard four loads of one warp in flight
     exp["unroll2_line32_per_image"] = ({"gmem_line_bytes": 32}, "per_image", True, PER_IMAGE_COUNT,
-                                       "interleaved", 2)
+                                       "interleaved", {"unroll": 2})
     exp["unroll2_scoreboard_line32_per_image"] = ({"scoreboard": True, "gmem_line_bytes": 32},
-                                                  "per_image", True, PER_IMAGE_COUNT, "interleaved", 2)
+                                                  "per_image", True, PER_IMAGE_COUNT, "interleaved",
+                                                  {"unroll": 2})
     # ...which then waits for the load/store unit's four-instruction queue
     exp["lsu8_unroll2_scoreboard_line32_per_image"] = (
         {"scoreboard": True, "gmem_line_bytes": 32, "lsu_depth": 8},
-        "per_image", True, PER_IMAGE_COUNT, "interleaved", 2)
+        "per_image", True, PER_IMAGE_COUNT, "interleaved", {"unroll": 2})
+    # 10. dp4ab: each lane loads one image's input word and broadcasts it,
+    #     instead of every lane loading every image's word from shared memory
+    exp["bcast_tiled"] = ({}, "tiled", True, TILED_COUNT, "rows", {"bcast": True})
+    exp["bcast_scoreboard_line32_tiled"] = ({"scoreboard": True, "gmem_line_bytes": 32}, "tiled", True,
+                                            TILED_COUNT, "interleaved", {"bcast": True})
+    # 11. double-buffered tiles: one barrier per stage instead of two
+    exp["dbuf_bcast_tiled"] = ({}, "tiled", True, TILED_COUNT, "rows", {"bcast": True, "dbuf": True})
+    exp["dbuf_bcast_scoreboard_line32_tiled"] = ({"scoreboard": True, "gmem_line_bytes": 32}, "tiled", True,
+                                                 TILED_COUNT, "interleaved", {"bcast": True, "dbuf": True})
     return exp
 
 
 def run_one(name: str, spec: Spec) -> dict:
     overrides, workload, dp4a, count, layout, *rest = spec
-    unroll = rest[0] if rest else 1
+    opts = rest[0] if rest else {}
     cfg = replace(Config(), **overrides)
     out = RESULTS / f"{name}.json"
     out.unlink(missing_ok=True)
     simrun.run(cfg, "cocotb_bench", {
         "RB_WORKLOAD": workload, "RB_DP4A": "1" if dp4a else "0", "RB_COUNT": str(count),
-        "RB_LAYOUT": layout, "RB_UNROLL": str(unroll), "RB_OUT": str(out),
+        "RB_LAYOUT": layout, "RB_UNROLL": str(opts.get("unroll", 1)),
+        "RB_BCAST": "1" if opts.get("bcast") else "0", "RB_DBUF": "1" if opts.get("dbuf") else "0",
+        "RB_OUT": str(out),
     }, build_tag=name)
     if not out.exists():
         raise RuntimeError(f"{name}: simulation produced no result (see build/sim/*_{name})")
@@ -109,8 +124,7 @@ def main() -> int:
     a = p.parse_args()
     if a.list:
         for k, (ov, w, d, n, layout, *rest) in exp.items():
-            print(f"{k:36s} {w:9s} dp4a={d!s:5} images={n:2d} {layout:11s} "
-                  f"unroll={rest[0] if rest else 1} {ov}")
+            print(f"{k:40s} {w:9s} dp4a={d!s:5} images={n:2d} {layout:11s} {rest[0] if rest else {}} {ov}")
         return 0
     names = a.only or list(exp)
     unknown = [n for n in names if n not in exp]

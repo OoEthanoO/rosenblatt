@@ -243,3 +243,31 @@ def test_tiled_model_validation_precedes_device_writes(bad, monkeypatch):
     with pytest.raises(ValueError):
         BatchMLP(dev, model, batch=8)
     assert dev.memory_used == 0
+
+
+def test_broadcast_kernel_matches_and_saves_instructions():
+    model = QuantMLP.load()
+    q0 = np.random.default_rng(4).integers(0, 128, (8, model.w1.shape[1]), dtype=np.int32)
+    plain, bcast = (BatchMLP(Device(EmuBackend()), model, batch=8, bcast=b).run(q0) for b in (False, True))
+    for result in (plain, bcast):
+        np.testing.assert_array_equal(result.hidden, model.hidden(q0))
+        np.testing.assert_array_equal(result.logits, model.logits(q0))
+    count = lambda r, k: sum(run.stats[k] for run in r.runs)  # noqa: E731
+    assert count(bcast, "instructions") < 0.7 * count(plain, "instructions")
+    assert count(bcast, "smem_wavefronts") < 0.25 * count(plain, "smem_wavefronts")
+
+
+@pytest.mark.parametrize("cfg", [Config(dp4a=False), Config(num_lanes=4, num_warps=8)])
+def test_broadcast_kernel_needs_dp4a_and_eight_lanes(cfg):
+    with pytest.raises(ValueError, match="bcast"):
+        BatchMLP(Device(EmuBackend(cfg)), rounding_model(), batch=8, bcast=True)
+
+
+def test_double_buffered_tiles_match_and_need_bcast():
+    model = QuantMLP.load()
+    q0 = np.random.default_rng(6).integers(0, 128, (13, model.w1.shape[1]), dtype=np.int32)
+    result = BatchMLP(Device(EmuBackend()), model, batch=13, bcast=True, dbuf=True).run(q0)
+    np.testing.assert_array_equal(result.hidden, model.hidden(q0))
+    np.testing.assert_array_equal(result.logits, model.logits(q0))
+    with pytest.raises(ValueError, match="dbuf needs bcast"):
+        BatchMLP(Device(EmuBackend()), model, batch=8, dbuf=True)

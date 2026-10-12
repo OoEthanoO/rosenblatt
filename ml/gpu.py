@@ -204,6 +204,11 @@ class BatchMLP:
     Needs blocks of exactly 32 threads (the default 8 lanes x 4 warps).
     layout="interleaved" stores the weights as interleave_words does, so a
     warp's weight loads hit neighbouring words (works with and without DP4A).
+    bcast=True uses dp4ab: each lane loads one image's input word and the
+    other lanes take it from that lane (needs DP4A and 8-lane warps).
+    dbuf=True (with bcast) keeps two tile buffers in shared memory: each stage
+    fetches the next tile while computing on the current one, with one
+    barrier per stage instead of two.
 
     With batch=None, reserve the largest multiple of eight that fits the
     remaining device memory. run_batches streams larger inputs through these
@@ -215,7 +220,7 @@ class BatchMLP:
     KC = 16   # input bytes staged per step (BT * KC / 4 == 32 threads)
 
     def __init__(self, device: Device, model: QuantMLP, batch: int | None = None, *, dp4a: bool | None = None,
-                 layout: str = "rows"):
+                 layout: str = "rows", bcast: bool = False, dbuf: bool = False):
         cfg = device.cfg
         _check_layout(layout)
         self.layout = layout
@@ -226,6 +231,11 @@ class BatchMLP:
         self.dp4a = cfg.dp4a if dp4a is None else dp4a
         if self.dp4a and not cfg.dp4a:
             raise ValueError("DP4A is not supported by this device")
+        if bcast and (not self.dp4a or cfg.num_lanes != self.BT):
+            raise ValueError(f"bcast needs DP4A and {self.BT}-lane warps")
+        if dbuf and not bcast:
+            raise ValueError("dbuf needs bcast")
+        self.bcast, self.dbuf = bcast, dbuf
         w1, b1, w2, b2, self.shift = _validate_model(model)
         n_hidden, n_input = w1.shape
         n_output = w2.shape[0]
@@ -239,8 +249,10 @@ class BatchMLP:
         if batch is not None and (isinstance(batch, (bool, np.bool_)) or
                                   not isinstance(batch, (int, np.integer)) or batch <= 0):
             raise ValueError("batch must be a positive integer or None for automatic sizing")
-        if cfg.smem_bytes < self.BT * self.KC:
-            raise ValueError("tiled kernel needs at least 128 bytes of shared memory")
+        tile = self.BT * (self.KC + 4 if bcast else self.KC)   # bcast pads each row by a word
+        tile += 256 if dbuf else 0                               # the second buffer (TILEBUF)
+        if cfg.smem_bytes < tile:
+            raise ValueError(f"tiled kernel needs at least {tile} bytes of shared memory")
         if cfg.mul_width == 16 and max(self.k1, self.n1, self.n2) >= 32768:
             raise ValueError("layer dimensions exceed the 16-bit multiplier's address arithmetic")
 
@@ -279,7 +291,8 @@ class BatchMLP:
                 "THREADS": self.threads, "BT": self.BT, "KC": self.KC,
                 "LOG_KC": self.KC.bit_length() - 1, "LOG_KC_WORDS": (self.KC // 4).bit_length() - 1,
                 "LOG_NGROUPS": groups.bit_length() - 1, "DP4A": int(self.dp4a),
-                "REQUANTIZE": int(requantize), "INTERLEAVED": int(layout == "interleaved")})
+                "REQUANTIZE": int(requantize), "INTERLEAVED": int(layout == "interleaved"),
+                "BCAST": int(bcast), "DBUF": int(dbuf)})
 
         for n in (self.n1, self.n2):
             groups = n // self.threads

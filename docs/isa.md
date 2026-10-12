@@ -1,7 +1,7 @@
 # Rosenblatt ISA
 
-Fifty instructions, 32 bits each: sixteen ALU operations in register and
-immediate forms, ten loads and stores, and nine control instructions. Every
+Fifty-one instructions, 32 bits each: sixteen ALU operations in register and
+immediate forms, `dp4ab`, ten loads and stores, and nine control instructions. Every
 thread has sixteen 32-bit registers (`r0` is always zero). The definitions live in one place,
 `sw/rosenblatt/isa.py`; the assembler, the emulator and the Verilog
 (`rtl/rb_isa.vh` is generated from it) all read them from there.
@@ -25,6 +25,7 @@ typically device addresses and sizes. Memory is byte addressed and little-endian
  31    26 25  22 21  18 17  14 13             0
 +--------+------+------+------+----------------+
 | opcode |  rd  | rs1  | rs2  |    unused      |  R-type  rd = rs1 OP rs2
+| opcode |  rd  | rs1  | rs2  | unused  | lane |  dp4ab (lane in bits 3..0)
 | opcode |  rd  | rs1  |     imm18 (signed)    |  I-type  rd = rs1 OP imm
 | opcode |  rd  |         imm22 (signed)       |  J-type  li / lui
 +--------+------+------+------+----------------+
@@ -63,6 +64,22 @@ are multiplied, as signed numbers, like NVIDIA's old `mul24`. Kernels that keep
 multiply operands in -32768 .. 32767 behave identically on both.
 ² Optional (`ENABLE_DP4A`); an illegal instruction where it is disabled.
 NVIDIA has had the same instruction (`__dp4a`) since Pascal.
+
+### `dp4ab rd, ra, rb, lane` (opcode `0x3A`)
+
+The same dot product as `dp4a`, but every lane takes `ra` from one lane of the
+warp: rd += sum of the four products of the signed bytes of *lane `lane`'s*
+`ra` and this lane's `rb`. The lane number is taken modulo the warp width. All
+lanes read their registers before any of them writes, so `dp4ab r5, r5, r6, 2`
+uses lane 2's old `r5` everywhere. Reading a lane whose thread does not exist
+gives an undefined value. It comes with `ENABLE_DP4A`.
+
+In CUDA terms it is `acc += __dp4a(__shfl_sync(mask, a, lane), b)` in one
+instruction. Eight of them in a row, one per lane, multiply an 8x4 tile of
+int8 values by a 4x8 tile across the warp: a matrix instruction spread over
+eight issue slots. The tiled network kernel uses it to read each input word
+from shared memory once per warp instead of once per image
+(`BatchMLP(..., bcast=True)`).
 
 ## Memory (opcodes `0x20`-`0x2F`)
 

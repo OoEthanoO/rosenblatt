@@ -118,7 +118,8 @@ def alu_random(dev: Device, seed: int, n_ops: int = 200) -> Outcome:
 
     src = ["s2r r1, %gtid", "shli r1, r1, 6", "s2r r2, %arg0", "add r1, r1, r2"]
     src += [f"ldw r{r}, [r1 + {4 * r}]" for r in range(2, 16)]
-    reg_fns = [f for f in Fn if f != Fn.DP4A or cfg.dp4a]
+    reg_fns = [f.name.lower() for f in Fn if f != Fn.DP4A or cfg.dp4a]
+    reg_fns += ["dp4ab"] if cfg.dp4a else []
     imm_fns = [f for f in Fn if f != Fn.DP4A]
     sregs = ["%tid", "%ntid", "%ctaid", "%nctaid", "%laneid", "%warpid", "%gtid", "%arg0", "%arg1"]
     for _ in range(n_ops):
@@ -127,7 +128,8 @@ def alu_random(dev: Device, seed: int, n_ops: int = 200) -> Outcome:
         kind = rng.random()
         if kind < 0.55:
             fn = reg_fns[int(rng.integers(len(reg_fns)))]
-            src.append(f"{fn.name.lower()} r{rd}, r{rs1}, r{rs2}")
+            lane = f", {int(rng.integers(0, 16))}" if fn == "dp4ab" else ""
+            src.append(f"{fn} r{rd}, r{rs1}, r{rs2}{lane}")
         elif kind < 0.9:
             fn = imm_fns[int(rng.integers(len(imm_fns)))]
             imm = int(rng.choice([0, 1, -1, 31, 32, 33, 131071, -131072,
@@ -171,10 +173,15 @@ def load_use_random(dev: Device, seed: int, n_ops: int = 160) -> Outcome:
            "shli r2, r2, 7", "s2r r14, %arg2", "add r14, r14, r2"]
     src += [f"ldw r{r}, [r1 + {4 * r}]" for r in range(2, 13)]
     fns = ["add", "sub", "xor", "and", "or", "mul", "mad", "shl", "sra", "slt", "min"]
-    fns += ["dp4a"] if cfg.dp4a else []
+    fns += ["dp4a", "dp4ab"] if cfg.dp4a else []
 
     def reg() -> int:
         return int(rng.integers(2, 13))
+
+    def alu(rd: int) -> str:
+        fn = fns[int(rng.integers(len(fns)))]
+        lane = f", {int(rng.integers(0, 16))}" if fn == "dp4ab" else ""
+        return f"{fn} r{rd}, r{reg()}, r{reg()}{lane}"
 
     def simple(out_lines: list[str], allow_load: bool = True) -> None:
         kind = rng.random()
@@ -185,8 +192,7 @@ def load_use_random(dev: Device, seed: int, n_ops: int = 160) -> Outcome:
                 op = "ldb" if rng.random() < 0.5 else "ldbu"
                 out_lines.append(f"{op} r{reg()}, [r1 + {int(rng.integers(0, 192))}]")
         elif kind < 0.85:
-            fn = fns[int(rng.integers(len(fns)))]
-            out_lines.append(f"{fn} r{reg()}, r{reg()}, r{reg()}")
+            out_lines.append(alu(reg()))
         else:
             out_lines.append(f"stw [r14 + {4 * int(rng.integers(0, 16))}], r{reg()}")
 
@@ -198,11 +204,10 @@ def load_use_random(dev: Device, seed: int, n_ops: int = 160) -> Outcome:
             ptr, dst = reg(), reg()
             src.append(f"ldw r{ptr}, [r13 + {4 * int(rng.integers(0, 48))}]")
             for _ in range(int(rng.integers(0, 3))):
-                fn = fns[int(rng.integers(len(fns)))]
                 tgt = reg()
                 while tgt == ptr:
                     tgt = reg()
-                src.append(f"{fn} r{tgt}, r{reg()}, r{reg()}")
+                src.append(alu(tgt))
             src.append(f"ldw r{dst}, [r{ptr}]")
         elif kind < 0.8:                                # same register loaded twice in a row
             r = reg()
@@ -556,7 +561,8 @@ def mlp_trained(dev: Device, seed: int) -> Outcome:
 
 def mlp_tiled(dev: Device, seed: int) -> Outcome:
     """Batched, shared-memory tiled inference (BatchMLP) with padded odd sizes,
-    with and without DP4A, and both weight layouts.
+    with and without DP4A, both weight layouts, dp4ab broadcasts and
+    double-buffered tiles.
 
     Only meaningful on devices with 32-thread blocks; elsewhere it does nothing.
     """
@@ -584,6 +590,13 @@ def mlp_tiled(dev: Device, seed: int) -> Outcome:
     np.testing.assert_array_equal(res.logits, model.logits(q0))
     outcome.outputs["logits_interleaved"] = res.logits
     outcome.runs.extend(res.runs)
+    if dev.cfg.dp4a and dev.cfg.num_lanes == BatchMLP.BT:
+        for dbuf in (False, True):
+            res = BatchMLP(dev, model, batch=11, bcast=True, dbuf=dbuf).run(q0)
+            np.testing.assert_array_equal(res.hidden, model.hidden(q0))
+            np.testing.assert_array_equal(res.logits, model.logits(q0))
+            outcome.outputs[f"logits_bcast_{int(dbuf)}"] = res.logits
+            outcome.runs.extend(res.runs)
     return outcome
 
 

@@ -18,7 +18,7 @@ times faster on the same problem.
 | Network | 784-64-10 MLP, int8, 97.80% on the MNIST test set (float32: 97.77%) |
 | Verified | every scenario bit-exact against the emulator on 4 hardware configurations; the full network over a simulated UART |
 | Baseline tiled kernel | 3,139 cycles per digit (32-image batch, 256 KiB RTL simulation, DP4A): 125.6 µs at 25 MHz |
-| Memory-system options | 32-byte lines, a register scoreboard and a deeper load queue: with matching kernels, one image 2.9x faster and tiled 1.32x, for 12% more logic |
+| Beyond the baseline | optional memory-system upgrades (11% more logic) and a cross-lane dot product (4%): with kernels written for them, one image 2.9x faster, tiled 1.86x |
 | FPGA | ULX3S ECP5-85F: the full design occupies 53% of the logic, with 64 KiB global memory and two supported PCB pinouts. Not yet run on a physical board |
 | RTX 5080 | the same network in 4.1 ns per digit (cuBLAS, tensor cores) |
 
@@ -151,6 +151,14 @@ four 8x8 multipliers per lane. On the ECP5 those are four DSP blocks
 per lane, which is why the smallest build uses a 16-bit multiplier for `mul`
 to stay within the chip's 28 DSPs.
 
+`dp4ab rd, ra, rb, lane` takes one more step toward a tensor core: every lane
+takes `ra` from one lane of the warp. Eight in a row, one per lane, multiply
+an 8x4 tile of int8 values by a 4x8 tile across the warp. A real tensor-core
+instruction does that in one issue, which means writing several registers per
+lane per instruction. Rosenblatt's register files have one write port, so the
+tile takes eight issue slots. The hardware is one 8-to-1 multiplexer per core
+(section 4 measures what it buys).
+
 ### Quantization without a multiplier
 
 The network runs entirely in integers: int8 weights and activations, int32
@@ -207,7 +215,7 @@ measures against the NumPy reference.
 Every number in this section comes from cycle-accurate simulation of the
 Verilog (Icarus Verilog) running real MNIST test images, with every output score
 checked against the NumPy reference. `python bench/profile_mnist.py` reruns
-all 44 experiments; full tables are in
+all 49 experiments; full tables are in
 [bench/results/summary.md](../bench/results/summary.md). Unless stated
 otherwise the GPU is the default build: 2 cores x 8 lanes x 4 warps, global
 memory latency 8 cycles, one 32-bit request per cycle.
@@ -377,7 +385,10 @@ to let warps run past outstanding loads. The hardware is 32 bits of state per
 warp and a comparison in the decode stage: about 1,100 LUTs for the whole GPU
 (3%). It bought 17%, less than hoped, because the loop gave a warp little to
 overlap. Each iteration loads one input word and one weight word, and the
-`dp4a` right after needs both.
+`dp4a` right after needs both. The scoreboard matters more when there are
+fewer warps to switch between: with two warps per core it makes the plain
+one-image kernel 1.26x faster (23,897 to 19,021 cycles), against 1.13x with
+four.
 
 **Unrolling the loop** by two (`unroll=2` in `GpuMLP`, `UNROLL` in
 `dense_int8.s`) handles two words per iteration. That is a fifth fewer
@@ -399,6 +410,40 @@ None of these changes is clever on its own. The work was in reading the
 counters after each one to see where the time had gone. That is also why the
 one-image kernel's 2.9x does not carry over to the tiled one: each fix
 addresses the limit of a particular piece of code.
+
+### Fewer instructions for the tiled kernel: dp4ab
+
+With the wider memory and the scoreboard, the tiled kernel issued an
+instruction on 86% of cycles, so only fewer instructions could make it much
+faster. For each weight word, every thread loaded all 8 images' input words
+from shared memory and ran 8 `dp4a`s: 17 instructions. With `dp4ab`, lane b
+loads image b's word once, and 8 `dp4ab`s take each image's word from its
+lane: 10 instructions (`BatchMLP(..., bcast=True)`).
+
+| Kernel | Memory system | Cycles per digit | Warp instructions | Shared-memory wavefronts |
+| --- | --- | ---: | ---: | ---: |
+| `dp4a` | 4-byte lines | 3,139 | 4,108 | 1,683 |
+| `dp4ab` | 4-byte lines | 2,648 | 2,590 | 306 |
+| `dp4a` | 32-byte lines, scoreboard | 2,385 | 4,108 | 1,683 |
+| `dp4ab` | 32-byte lines, scoreboard | **1,690** | 2,590 | 306 |
+
+Instructions drop by 37%. With the default memory the kernel then waits on
+the memory port again (79% busy), and gains 1.19x; with the wider memory and
+the scoreboard it gains 1.41x. Together the changes in this section take the
+tiled kernel from 3,139 to 1,690 cycles per digit, 1.86x.
+
+The instruction costs 4% more logic. The first version cost 21%: it wired the
+broadcast operand to the ALU's general input, and synthesis copied the 8-way
+multiplexer into every lane's adders and shifters to keep the paths short.
+Feeding it only to the dot-product multipliers fixed that.
+
+**Double-buffered tiles** (`dbuf=True`), the textbook next step, did not pay
+off here. With two tile buffers in shared memory, each stage fetches the next
+tile while it computes on the current one, and needs one barrier instead of
+two. That was 4% faster with the default memory (2,537 cycles), and 3% slower
+with the scoreboard and wide lines (1,736): swapping buffers costs three
+instructions per stage, more than the barrier it saves. The barriers were not
+what limited the kernel. The option stays in the code, off.
 
 ## 5. On an FPGA
 
@@ -538,18 +583,16 @@ In order of expected payoff, judged from the measurements above:
    run `python fpga/bringup.py --port COM5` with the matching revision. The
    script loads SRAM, verifies all global memory, and compares every network
    layer with the reference on 20 test images.
-2. **A matrix instruction.** With wide lines and the scoreboard the tiled
-   kernel issues an instruction on 86% of cycles, so further gains must come
-   from executing fewer instructions. DP4A cut instructions by about 4x. A
-   small tensor-core-style instruction (for example a 4x4 int8 matrix times a
-   4x4 matrix per instruction across the warp) is the next step on the same
-   path.
+2. **A real matrix instruction.** `dp4ab` computes an 8x8 tile of dot
+   products in eight issue slots. Doing it in one needs several register
+   writes per lane per instruction: a write-back that takes several cycles,
+   or wider register files. That is where tensor cores get their throughput.
 3. **More warps per core.** Four warps hide an 8-cycle memory latency but not a
    32-cycle one. Real SMs hold 48-64 warps. The scoreboard lets each warp hide
-   some latency itself, so more warps matter most for code that cannot be
-   unrolled.
+   some latency itself: with it, halving the warps costs the one-image kernel
+   20% instead of 34%.
 4. **The memory options on the board.** 32-byte lines, the scoreboard and an
-   8-instruction queue together cost 12% more logic. They are off in the board
+   8-instruction queue together cost 11% more logic. They are off in the board
    build until the plain design has run on real hardware.
 
 ### Tiny Tapeout

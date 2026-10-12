@@ -99,6 +99,8 @@ lsu1: one global memory instruction in flight per core (the first design); park:
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | warps2_per_image | 23,897 | 11,457 | 14,404 | 0.24 | 60% | 68% | 1,630 | 4/4 |
 | per_image_dp4a | 17,796 | 11,471 | 14,404 | 0.33 | 81% | 24% | 14,736 | 4/4 |
+| scoreboard_warps2_per_image | 19,021 | 11,457 | 14,404 | 0.31 | 76% | 62% | 1,736 | 4/4 |
+| scoreboard_per_image | 15,804 | 11,471 | 14,404 | 0.37 | 91% | 6% | 17,397 | 4/4 |
 
 ## Memory line size and weight layout (per_image)
 
@@ -147,6 +149,19 @@ scoreboard: a global load stalls only the instructions that use its register, no
 | scoreboard_tiled | 3,056 | 4,108 | 2,100 | 0.67 | 69% | 11% | 1,012 | 32/32 |
 | line32_interleaved_tiled | 2,539 | 4,108 | 356 | 0.81 | 14% | 11% | 156 | 32/32 |
 | scoreboard_line32_tiled | 2,385 | 4,108 | 356 | 0.86 | 15% | 2% | 412 | 32/32 |
+
+## dp4ab: one input word per lane, broadcast to the others (tiled)
+
+bcast: each lane loads one image's input word from shared memory and dp4ab hands it to every lane, instead of every lane loading every image's word. dbuf: two tile buffers, the next tile fetched while the current one is used, one barrier per stage.
+
+| Experiment | cycles / image | warp instructions / image | global requests / image | IPC per core | memory port busy | issue slots lost to memory waits | replays / image | correct |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| tiled_dp4a | 3,139 | 4,108 | 2,100 | 0.65 | 67% | 14% | 870 | 32/32 |
+| bcast_tiled | 2,648 | 2,590 | 2,100 | 0.49 | 79% | 19% | 1,329 | 32/32 |
+| dbuf_bcast_tiled | 2,537 | 2,698 | 2,112 | 0.53 | 83% | 16% | 1,368 | 32/32 |
+| scoreboard_line32_tiled | 2,385 | 4,108 | 356 | 0.86 | 15% | 2% | 412 | 32/32 |
+| bcast_scoreboard_line32_tiled | 1,690 | 2,590 | 356 | 0.77 | 21% | 6% | 463 | 32/32 |
+| dbuf_bcast_scoreboard_line32_tiled | 1,736 | 2,698 | 358 | 0.78 | 21% | 7% | 443 | 32/32 |
 
 ## One bottleneck after another (per_image)
 

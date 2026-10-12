@@ -207,13 +207,14 @@ module rb_core #(
     wire s1_is_sync = s1_op == `RB_OP_SYNC;
     wire s1_is_bar  = s1_op == `RB_OP_BAR;
     wire s1_is_ret  = s1_op == `RB_OP_RET;
+    wire s1_is_dp4ab = (s1_op == `RB_OP_DP4AB) && ENABLE_DP4A;   // dp4a, rs1 from one lane
     wire s1_illegal = !(s1_is_alu | s1_is_mem | s1_is_li | s1_is_lui | s1_is_s2r | s1_is_bz |
-                        s1_is_bnz | s1_is_ssy | s1_is_sync | s1_is_bar | s1_is_ret);
+                        s1_is_bnz | s1_is_ssy | s1_is_sync | s1_is_bar | s1_is_ret | s1_is_dp4ab);
 
     // registers the instruction reads or writes, checked against the scoreboard
-    wire        s1_reads_rs1 = s1_is_alu | s1_is_mem | s1_is_bz | s1_is_bnz;
-    wire        s1_reads_rs2 = s1_is_alu && !s1_op[4];
-    wire        s1_uses_rd   = s1_is_alu | s1_is_mem | s1_is_li | s1_is_lui | s1_is_s2r;
+    wire        s1_reads_rs1 = s1_is_alu | s1_is_dp4ab | s1_is_mem | s1_is_bz | s1_is_bnz;
+    wire        s1_reads_rs2 = (s1_is_alu && !s1_op[4]) | s1_is_dp4ab;
+    wire        s1_uses_rd   = s1_is_alu | s1_is_dp4ab | s1_is_mem | s1_is_li | s1_is_lui | s1_is_s2r;
     wire [15:0] s1_regs      = (s1_reads_rs1 ? 16'd1 << s1_rs1 : 16'd0) |
                                (s1_reads_rs2 ? 16'd1 << s1_rs2 : 16'd0) |
                                (s1_uses_rd   ? 16'd1 << s1_rd  : 16'd0);
@@ -231,6 +232,8 @@ module rb_core #(
     reg [3:0]         s2_rd;
     reg [31:0]        s2_imm18, s2_imm22;
     reg s2_alu, s2_imm, s2_mem, s2_li, s2_lui, s2_s2r, s2_bz, s2_bnz;
+    reg s2_bcast;                     // dp4ab: rs1 comes from lane s2_lane
+    reg [LB-1:0] s2_lane;
     reg s2_ssy, s2_sync, s2_bar, s2_ret, s2_illegal, s2_writes;
     always @(posedge clk) begin
         s2_valid   <= rst ? 1'b0 : s1_valid && !s1_hazard;
@@ -241,8 +244,10 @@ module rb_core #(
         s2_rd      <= s1_rd;
         s2_imm18   <= {{14{s1_instr[17]}}, s1_instr[17:0]};
         s2_imm22   <= {{10{s1_instr[21]}}, s1_instr[21:0]};
-        s2_alu     <= s1_is_alu;
-        s2_imm     <= s1_op[4];
+        s2_alu     <= s1_is_alu | s1_is_dp4ab;
+        s2_imm     <= s1_op[4] && !s1_is_dp4ab;
+        s2_bcast   <= s1_is_dp4ab;
+        s2_lane    <= s1_instr[LB-1:0];
         s2_mem     <= s1_is_mem;
         s2_li      <= s1_is_li;
         s2_lui     <= s1_is_lui;
@@ -254,7 +259,7 @@ module rb_core #(
         s2_bar     <= s1_is_bar;
         s2_ret     <= s1_is_ret;
         s2_illegal <= s1_illegal;
-        s2_writes  <= (s1_is_alu | s1_is_li | s1_is_lui | s1_is_s2r) && s1_rd != 4'd0;
+        s2_writes  <= (s1_is_alu | s1_is_dp4ab | s1_is_li | s1_is_lui | s1_is_s2r) && s1_rd != 4'd0;
     end
 
     // ======================================================= S2: execute
@@ -297,11 +302,22 @@ module rb_core #(
         endcase
     end
 
+    // dp4ab: one lane's rs1 operand is broadcast to every lane's ALU
+    wire [W*32-1:0] qa_all;
+    reg  [31:0]     qa_lane;
+    always @* begin : p_bcast
+        integer i;
+        qa_lane = qa_all[31:0];
+        for (i = 1; i < W; i = i + 1)
+            if (s2_lane == i) qa_lane = qa_all[i*32 +: 32];
+    end
+
     genvar gl;
     generate
         for (gl = 0; gl < W; gl = gl + 1) begin : g_lane
             localparam [LB-1:0] LANE = gl;
             wire [31:0] qa, qb, qc, alu_y;
+            assign qa_all[gl*32 +: 32] = qa;
             rb_regfile #(.AW(RFA)) u_rf (
                 .clk(clk), .ra(rf_ra), .rb(rf_rb), .rc(rf_rc),
                 .qa(qa), .qb(qb), .qc(qc),
@@ -309,7 +325,8 @@ module rb_core #(
             );
             // two stages: operands in S2, result (alu_y) in S3
             rb_alu #(.MUL_WIDTH(MUL_WIDTH), .ENABLE_DP4A(ENABLE_DP4A)) u_alu (
-                .clk(clk), .fn(s2_op[3:0]), .a(qa), .b(s2_imm ? s2_imm18 : qb), .c(qc), .y(alu_y)
+                .clk(clk), .fn(s2_bcast ? `RB_FN_DP4A : s2_op[3:0]), .a(qa),
+                .a_dot(s2_bcast ? qa_lane : qa), .b(s2_imm ? s2_imm18 : qb), .c(qc), .y(alu_y)
             );
             wire [31:0] tid = {{(32-WB-LB){1'b0}}, s2_warp, LANE};
             wire [31:0] srv = (sr_sel == `RB_SR_TID)    ? tid :

@@ -7,6 +7,8 @@ counters to the JSON file named by $RB_OUT.
     RB_WORKLOAD = per_image | tiled      RB_DP4A = 0 | 1      RB_COUNT = images
     RB_LAYOUT = rows | interleaved (weight layout, default rows)
     RB_UNROLL = 1 | 2 (one-image kernel only, default 1)
+    RB_BCAST = 0 | 1 (tiled kernel only: dp4ab broadcasts, default 0)
+    RB_DBUF = 0 | 1 (tiled kernel with RB_BCAST: double-buffered tiles, default 0)
 """
 
 from __future__ import annotations
@@ -33,6 +35,8 @@ def run_bench(dut) -> dict:
     count = int(os.environ["RB_COUNT"])
     layout = os.environ.get("RB_LAYOUT", "rows")
     unroll = int(os.environ.get("RB_UNROLL", "1"))
+    bcast = os.environ.get("RB_BCAST", "0") == "1"
+    dbuf = os.environ.get("RB_DBUF", "0") == "1"
     model = QuantMLP.load()
     data = mnist.load("test")
     q0 = preprocess(data["test_images"][:count])
@@ -48,7 +52,7 @@ def run_bench(dut) -> dict:
             runs += res.runs
         logits = np.array(logits)
     else:
-        res = BatchMLP(dev, model, batch=count, dp4a=dp4a, layout=layout).run(q0)
+        res = BatchMLP(dev, model, batch=count, dp4a=dp4a, layout=layout, bcast=bcast, dbuf=dbuf).run(q0)
         logits, runs = res.logits, res.runs
     np.testing.assert_array_equal(logits, model.logits(q0))
     correct = int((np.argmax(logits, axis=1) == data["test_labels"][:count]).sum())
@@ -59,7 +63,8 @@ def run_bench(dut) -> dict:
             for k, v in core.items():
                 totals[k] = totals.get(k, 0) + v
     return {
-        "workload": workload, "dp4a": dp4a, "layout": layout, "unroll": unroll, "count": count,
+        "workload": workload, "dp4a": dp4a, "layout": layout, "unroll": unroll, "bcast": bcast, "dbuf": dbuf,
+        "count": count,
         "correct": correct,
         "config": json.loads(os.environ["RB_CONFIG"]),
         "cycles": sum(r.cycles for r in runs),

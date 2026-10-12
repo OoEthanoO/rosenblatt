@@ -250,6 +250,19 @@ class Emulator:
             warp.pc += 1
             return
 
+        if op == Op.DP4AB:  # ------------------- dp4a, rs1 from one lane
+            if not cfg.dp4a:
+                self._error(f"dp4ab needs dp4a, which is not enabled (pc {warp.pc})")
+            else:
+                a = R[d.lane % cfg.num_lanes][d.rs1]   # read before any lane writes
+                for lane in lanes:
+                    r = R[lane]
+                    res = self._alu(Fn.DP4A, a, r[d.rs2], r[d.rd])
+                    if d.rd:
+                        r[d.rd] = res
+            warp.pc += 1
+            return
+
         # -------------------------------------------------------- control
         if op == Op.LI or op == Op.LUI:
             v = (d.imm22 if op == Op.LI else d.imm22 << 10) & MASK32

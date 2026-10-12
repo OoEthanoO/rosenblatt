@@ -8,6 +8,7 @@ Instruction word, 32 bits:
      31    26 25  22 21  18 17  14 13             0
     +--------+------+------+------+----------------+
     | opcode |  rd  | rs1  | rs2  |    unused      |  R-type  rd = rs1 OP rs2
+    | opcode |  rd  | rs1  | rs2  |  unused | lane |  dp4ab   (lane in bits 3..0)
     | opcode |  rd  | rs1  |     imm18 (signed)    |  I-type  rd = rs1 OP imm
     | opcode |  rd  |         imm22 (signed)       |  J-type  li / lui
     +--------+------+------+------+----------------+
@@ -82,6 +83,8 @@ class Op(IntEnum):
     SYNC = 0x37  # pop: go to the next deferred path / reconverge
     BAR = 0x38   # block-wide barrier (__syncthreads)
     RET = 0x39   # thread exits
+    # ALU, with one operand broadcast across the warp (needs DP4A in hardware)
+    DP4AB = 0x3A  # rd += dot(int8x4 rs1 of lane `lane`, int8x4 rs2)
 
 
 ALU_R_BASE = 0x00
@@ -152,6 +155,7 @@ def _build_specs() -> list[Spec]:
         Spec("sync", Op.SYNC, "-"),
         Spec("bar", Op.BAR, "-"),
         Spec("ret", Op.RET, "-"),
+        Spec("dp4ab", Op.DP4AB, "rrrl"),
     ]
     return specs
 
@@ -225,8 +229,12 @@ def fits_signed(value: int, bits: int) -> bool:
     return -(1 << (bits - 1)) <= value < (1 << (bits - 1))
 
 
-def encode(opcode: int, rd: int = 0, rs1: int = 0, rs2: int = 0, imm: int | None = None) -> int:
-    """Pack one instruction. imm goes into imm18, or imm22 for li/lui."""
+def encode(opcode: int, rd: int = 0, rs1: int = 0, rs2: int = 0, imm: int | None = None,
+           lane: int = 0) -> int:
+    """Pack one instruction. imm goes into imm18, or imm22 for li/lui; lane
+    (dp4ab) into bits 3..0 of an R-type word."""
+    if not 0 <= lane < 16:
+        raise ValueError(f"lane {lane} is not in 0..15")
     for name, r in (("rd", rd), ("rs1", rs1), ("rs2", rs2)):
         if not 0 <= r < NUM_REGS:
             raise ValueError(f"{name}={r} is not a register")
@@ -240,7 +248,7 @@ def encode(opcode: int, rd: int = 0, rs1: int = 0, rs2: int = 0, imm: int | None
         if not fits_signed(imm, IMM18_BITS):
             raise ValueError(f"imm18 out of range: {imm}")
         return word | (imm & ((1 << IMM18_BITS) - 1))
-    return word | rs2 << RS2_SHIFT
+    return word | rs2 << RS2_SHIFT | lane
 
 
 @dataclass(frozen=True)
@@ -255,6 +263,10 @@ class Decoded:
     @property
     def group(self) -> int:
         return self.opcode >> 4 & 3
+
+    @property
+    def lane(self) -> int:
+        return self.imm18 & 0xF
 
 
 def decode(word: int) -> Decoded:
@@ -291,6 +303,8 @@ def disassemble(word: int, symbols: dict[int, str] | None = None) -> str:
     m, f = spec.mnemonic, spec.fmt
     if f == "rrr":
         return f"{m} r{d.rd}, r{d.rs1}, r{d.rs2}"
+    if f == "rrrl":
+        return f"{m} r{d.rd}, r{d.rs1}, r{d.rs2}, {d.lane}"
     if f == "rri":
         return f"{m} r{d.rd}, r{d.rs1}, {d.imm18}"
     if f == "ld":

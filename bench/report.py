@@ -83,7 +83,8 @@ def main() -> int:
                 [f"lsu1_{w}", f"lsu1_park_{w}", default, f"park_{w}"],
                 "lsu1: one global memory instruction in flight per core (the first design); "
                 "park: warps sleep while the LSU is busy instead of retrying.")
-    section("Warps per core (per_image)", ["warps2_per_image", "per_image_dp4a"])
+    section("Warps per core (per_image)", ["warps2_per_image", "per_image_dp4a",
+                                           "scoreboard_warps2_per_image", "scoreboard_per_image"])
     for w in ("per_image", "tiled"):
         section(f"Memory line size and weight layout ({w})",
                 [f"{w}_dp4a", f"interleaved_{w}"] +
@@ -95,6 +96,12 @@ def main() -> int:
                 [f"{w}_dp4a", f"scoreboard_{w}", f"line32_interleaved_{w}", f"scoreboard_line32_{w}"],
                 "scoreboard: a global load stalls only the instructions that use its register, "
                 "not the whole warp. line32 rows use interleaved weights.")
+    section("dp4ab: one input word per lane, broadcast to the others (tiled)",
+            ["tiled_dp4a", "bcast_tiled", "dbuf_bcast_tiled", "scoreboard_line32_tiled",
+             "bcast_scoreboard_line32_tiled", "dbuf_bcast_scoreboard_line32_tiled"],
+            "bcast: each lane loads one image's input word from shared memory and dp4ab hands it to "
+            "every lane, instead of every lane loading every image's word. dbuf: two tile buffers, "
+            "the next tile fetched while the current one is used, one barrier per stage.")
     section("One bottleneck after another (per_image)",
             ["per_image_dp4a", "line32_interleaved_per_image", "scoreboard_line32_per_image",
              "unroll2_scoreboard_line32_per_image", "lsu8_unroll2_scoreboard_line32_per_image"],

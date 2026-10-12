@@ -27,7 +27,8 @@ module rb_alu #(
     input  wire        clk,
     // stage 1
     input  wire [3:0]  fn,
-    input  wire [31:0] a,   // rs1
+    input  wire [31:0] a,       // rs1
+    input  wire [31:0] a_dot,   // rs1 for dp4a: this lane's, or one lane's for every lane (dp4ab)
     input  wire [31:0] b,   // rs2 or immediate
     input  wire [31:0] c,   // rd (accumulator for mad/dp4a)
     // stage 2
@@ -57,7 +58,8 @@ module rb_alu #(
     wire [63:0] dprod;
     generate
         if (ENABLE_DP4A) begin : g_dp4a
-            wire signed [7:0]  a0 = a[7:0],   a1 = a[15:8],  a2 = a[23:16], a3 = a[31:24];
+            wire signed [7:0]  a0 = a_dot[7:0],   a1 = a_dot[15:8];
+            wire signed [7:0]  a2 = a_dot[23:16], a3 = a_dot[31:24];
             wire signed [7:0]  b0 = b[7:0],   b1 = b[15:8],  b2 = b[23:16], b3 = b[31:24];
             wire signed [15:0] p0 = a0 * b0,  p1 = a1 * b1,  p2 = a2 * b2,  p3 = a3 * b3;
             assign dprod = {p3, p2, p1, p0};

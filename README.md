@@ -111,8 +111,11 @@ read neighbouring words (`layout="interleaved"`); with row-major weights it
 changes almost nothing. Adding a register scoreboard (`SCOREBOARD=1`: a load
 stalls only the instructions that need its register), a loop unrolled by two,
 and an 8-instruction load queue brings the one-image kernel to 6,057 cycles,
-2.9x faster than the baseline; the tiled kernel reaches 2,385 cycles. The
-hardware options cost 12% more logic and are off in the board build.
+2.9x faster than the baseline. These hardware options cost 11% more logic and
+are off in the board build. A cross-lane dot product, `dp4ab` (one lane's
+operand broadcast to the whole warp, 4% more logic), cuts the tiled kernel's
+instructions by 37%; with the memory options it runs in 1,690 cycles, 1.86x
+faster than the baseline.
 
 The same network on an RTX 5080 Laptop GPU (`cuda/`), 10,000 images, every
 output score identical to the reference:

@@ -289,12 +289,18 @@ Passing these tests and routing does not replace programming a physical
 board. The final acceptance step is a successful bring-up run on the chosen
 PCB revision.
 
+`python fpga/record_validation.py` writes the validation record
+(`fpga/validation/ulx3s-85f.json`) after both images are built and the test
+runs listed in its docstring have produced their reports. It refuses to write
+anything if an image is stale, a report failed, or a report is older than the
+sources.
+
 ### Recorded results: 2026-10-12
 
-These results are for the Verilog as of commit `49a2209`. The memory-system
-options added after it (word-only store merging, the register scoreboard)
-changed the sources, so rebuild before programming a board; `bringup.py`
-refuses a stale image.
+These results are for the Verilog as of commit `49a2209`. The changes after
+it (word-only store merging, the register scoreboard, `dp4ab`) changed the
+sources, so rebuild before programming a board; `bringup.py` refuses a stale
+image.
 
 Both 85F builds completed with speed grade 6, `router1`, and placement seed 1:
 
@@ -361,6 +367,11 @@ Lessons from getting here:
   only, and the 32-byte build costs 11% more LUTs than the 4-byte one
   (39,312 against 35,550 in synthesis), for a 1.9x faster one-image kernel
   when the weights are interleaved (see the write-up, section 4).
+- **Watch where a shared multiplexer goes.** `dp4ab` needs one 8-to-1, 32-bit
+  multiplexer per core. Wired to the ALU's general operand input, it grew the
+  GPU by 21%: to keep paths short, synthesis copied it into every lane's
+  adders, shifters and comparators. Wired only to the dot-product multipliers,
+  it costs 4%.
 - **DSP blocks run out before logic does.** Each lane needs 3 DSPs for a
   32x32 multiply and 4 for DP4A. The 25F has 28 DSPs, so its 4-lane build
   uses the 16-bit multiplier (1 DSP) and keeps DP4A.
