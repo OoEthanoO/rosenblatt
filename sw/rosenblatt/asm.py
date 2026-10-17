@@ -550,6 +550,12 @@ class Assembler:
         if f == "rrrl":
             need(4)
             return [enc(op, reg(ops[0]), reg(ops[1]), reg(ops[2]), lane=val(ops[3]))]
+        if f == "rr":
+            need(2)
+            return [enc(op, 0, reg(ops[0]), reg(ops[1]))]
+        if f == "rl":
+            need(2)
+            return [enc(op, reg(ops[0]), lane=val(ops[1]))]
         if f == "ld":
             need(2)
             base, off = self._mem(ops[1], s)

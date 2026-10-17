@@ -19,12 +19,14 @@ CONFIGS = {
     # one memory instruction in flight, register scoreboard
     "small": Config(num_cores=1, num_lanes=4, num_warps=2, mul_width=16, dp4a=False,
                     gmem_latency=1, smem_bytes=1024, stack_depth=8, lsu_depth=1, scoreboard=True),
-    # slow, narrow memory, more cores contending for it, parked warps, 8-byte lines
+    # slow, narrow memory, more cores contending for it, parked warps, 8-byte lines,
+    # a matrix unit with 4 x 4 tiles
     "busy_mem": Config(num_cores=3, num_lanes=4, num_warps=4, gmem_latency=13, gmem_interval=2,
-                       lsu_depth=2, park=True, gmem_line_bytes=8),
-    # the default GPU with 32-byte memory lines (one request can serve a whole warp)
-    # and a register scoreboard (a load stalls only the instructions that need it)
-    "wide_lines": Config(gmem_line_bytes=32, scoreboard=True),
+                       lsu_depth=2, park=True, gmem_line_bytes=8, mma=True),
+    # the default GPU with 32-byte memory lines (one request can serve a whole warp),
+    # a register scoreboard (a load stalls only the instructions that need it)
+    # and the matrix unit
+    "wide_lines": Config(gmem_line_bytes=32, scoreboard=True, mma=True),
 }
 
 

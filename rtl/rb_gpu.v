@@ -35,7 +35,8 @@ module rb_gpu #(
     parameter LSU_DEPTH     = 4,
     parameter PARK          = 0,
     parameter GMEM_LINE     = 4,    // bytes per global-memory request: 4, 8, 16 or 32
-    parameter SCOREBOARD    = 0     // 1: a global load stalls only the instructions using its register
+    parameter SCOREBOARD    = 0,    // 1: a global load stalls only the instructions using its register
+    parameter ENABLE_MMA    = 0     // 1: the matrix unit (mma, mmaz, mmar); needs ENABLE_DP4A
 ) (
     input  wire        clk,
     input  wire        rst,
@@ -58,7 +59,8 @@ module rb_gpu #(
     localparam [7:0] P_SMEM  = SMEM_AW,    P_GMEM  = GMEM_AW,   P_IMEM  = IMEM_AW;
     localparam [7:0] P_MULW  = MUL_WIDTH,  P_STACK = STACK_DEPTH, P_LAT = GMEM_LATENCY;
     localparam [7:0] P_FEAT  = (ENABLE_DP4A ? `RB_FEATURE_DP4A : 8'd0) |
-                               (SCOREBOARD ? `RB_FEATURE_SCOREBOARD : 8'd0);
+                               (SCOREBOARD ? `RB_FEATURE_SCOREBOARD : 8'd0) |
+                               (ENABLE_MMA && ENABLE_DP4A ? `RB_FEATURE_MMA : 8'd0);
     localparam [7:0] P_LSUD  = LSU_DEPTH,  P_INTV  = GMEM_INTERVAL, P_PARK = PARK;
     localparam [7:0] P_LINE  = GMEM_LINE;
     localparam LWB  = $clog2(GMEM_LINE / 4);   // word-in-line bits
@@ -232,7 +234,7 @@ module rb_gpu #(
                 .CORE_ID(gc), .W(NUM_LANES), .NW(NUM_WARPS), .IMEM_AW(IMEM_AW),
                 .GMEM_AW(GMEM_AW), .GMEM_LINE(GMEM_LINE), .SMEM_AW(SMEM_AW), .STACK_DEPTH(STACK_DEPTH),
                 .MUL_WIDTH(MUL_WIDTH), .ENABLE_DP4A(ENABLE_DP4A),
-                .LSU_DEPTH(LSU_DEPTH), .PARK(PARK), .SCOREBOARD(SCOREBOARD)
+                .LSU_DEPTH(LSU_DEPTH), .PARK(PARK), .SCOREBOARD(SCOREBOARD), .ENABLE_MMA(ENABLE_MMA)
             ) u_core (
                 .clk(clk), .rst(rst),
                 .imem_we(imem_we), .imem_waddr(host_addr[IMEM_AW-1:0]), .imem_wdata(host_wdata),

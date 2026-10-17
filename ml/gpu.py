@@ -209,6 +209,8 @@ class BatchMLP:
     dbuf=True (with bcast) keeps two tile buffers in shared memory: each stage
     fetches the next tile while computing on the current one, with one
     barrier per stage instead of two.
+    mma=True stages tiles as bcast does and computes each weight word's eight
+    dot products with one mma instruction (needs the matrix unit).
 
     With batch=None, reserve the largest multiple of eight that fits the
     remaining device memory. run_batches streams larger inputs through these
@@ -220,7 +222,7 @@ class BatchMLP:
     KC = 16   # input bytes staged per step (BT * KC / 4 == 32 threads)
 
     def __init__(self, device: Device, model: QuantMLP, batch: int | None = None, *, dp4a: bool | None = None,
-                 layout: str = "rows", bcast: bool = False, dbuf: bool = False):
+                 layout: str = "rows", bcast: bool = False, dbuf: bool = False, mma: bool = False):
         cfg = device.cfg
         _check_layout(layout)
         self.layout = layout
@@ -231,11 +233,14 @@ class BatchMLP:
         self.dp4a = cfg.dp4a if dp4a is None else dp4a
         if self.dp4a and not cfg.dp4a:
             raise ValueError("DP4A is not supported by this device")
+        if mma and not cfg.mma:
+            raise ValueError("the matrix unit (mma) is not supported by this device")
+        bcast = bcast or mma            # mma uses the same tile staging
         if bcast and (not self.dp4a or cfg.num_lanes != self.BT):
-            raise ValueError(f"bcast needs DP4A and {self.BT}-lane warps")
+            raise ValueError(f"{'mma' if mma else 'bcast'} needs DP4A and {self.BT}-lane warps")
         if dbuf and not bcast:
-            raise ValueError("dbuf needs bcast")
-        self.bcast, self.dbuf = bcast, dbuf
+            raise ValueError("dbuf needs bcast or mma")
+        self.bcast, self.dbuf, self.mma = bcast, dbuf, mma
         w1, b1, w2, b2, self.shift = _validate_model(model)
         n_hidden, n_input = w1.shape
         n_output = w2.shape[0]
@@ -292,7 +297,7 @@ class BatchMLP:
                 "LOG_KC": self.KC.bit_length() - 1, "LOG_KC_WORDS": (self.KC // 4).bit_length() - 1,
                 "LOG_NGROUPS": groups.bit_length() - 1, "DP4A": int(self.dp4a),
                 "REQUANTIZE": int(requantize), "INTERLEAVED": int(layout == "interleaved"),
-                "BCAST": int(bcast), "DBUF": int(dbuf)})
+                "BCAST": int(bcast), "DBUF": int(dbuf), "MMA": int(mma)})
 
         for n in (self.n1, self.n2):
             groups = n // self.threads

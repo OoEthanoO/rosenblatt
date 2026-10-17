@@ -8,7 +8,7 @@ Instruction word, 32 bits:
      31    26 25  22 21  18 17  14 13             0
     +--------+------+------+------+----------------+
     | opcode |  rd  | rs1  | rs2  |    unused      |  R-type  rd = rs1 OP rs2
-    | opcode |  rd  | rs1  | rs2  |  unused | lane |  dp4ab   (lane in bits 3..0)
+    | opcode |  rd  | rs1  | rs2  |  unused | lane |  dp4ab, mmar (lane/row in bits 3..0)
     | opcode |  rd  | rs1  |     imm18 (signed)    |  I-type  rd = rs1 OP imm
     | opcode |  rd  |         imm22 (signed)       |  J-type  li / lui
     +--------+------+------+------+----------------+
@@ -85,6 +85,11 @@ class Op(IntEnum):
     RET = 0x39   # thread exits
     # ALU, with one operand broadcast across the warp (needs DP4A in hardware)
     DP4AB = 0x3A  # rd += dot(int8x4 rs1 of lane `lane`, int8x4 rs2)
+    # the warp's matrix unit (needs MMA and DP4A in hardware): one 8x8 int32
+    # accumulator tile per warp, outside the register file
+    MMA = 0x3B   # C += A x B: row j of A is lane j's rs1, column i of B is lane i's rs2
+    MMAZ = 0x3C  # C = 0 (the active lanes' columns)
+    MMAR = 0x3D  # rd = C[row][lane]
 
 
 ALU_R_BASE = 0x00
@@ -124,6 +129,7 @@ NUM_ARGS = 8
 #   rrr  rd, rs1, rs2        rri  rd, rs1, imm       ld  rd, [rs1 + imm]
 #   st   [rs1 + imm], rd     ri   rd, imm22          sr  rd, %special
 #   br   rs1, target         tgt  target             -   (no operands)
+#   rrrl rd, rs1, rs2, lane  rr   rs1, rs2           rl  rd, row
 
 
 @dataclass(frozen=True)
@@ -156,6 +162,9 @@ def _build_specs() -> list[Spec]:
         Spec("bar", Op.BAR, "-"),
         Spec("ret", Op.RET, "-"),
         Spec("dp4ab", Op.DP4AB, "rrrl"),
+        Spec("mma", Op.MMA, "rr"),
+        Spec("mmaz", Op.MMAZ, "-"),
+        Spec("mmar", Op.MMAR, "rl"),
     ]
     return specs
 
@@ -211,10 +220,12 @@ class Perf(IntEnum):
     LSU_BUSY = 11      # cycles the global load/store unit was occupied
     DIVERGE = 12       # branches that split a warp
     BLOCKS = 13        # blocks executed on this core
+    MMA_STEPS = 14     # matrix-unit steps: one tile row per step, a warp-width of them per mma or mmaz
 
 
 FEATURE_DP4A = 0x01
 FEATURE_SCOREBOARD = 0x02   # a global load stalls only the instructions that use its register
+FEATURE_MMA = 0x04          # mma, mmaz, mmar: a matrix unit with an accumulator tile per warp
 HW_VERSION = 1
 
 # --------------------------------------------------------- encode/decode
@@ -232,7 +243,7 @@ def fits_signed(value: int, bits: int) -> bool:
 def encode(opcode: int, rd: int = 0, rs1: int = 0, rs2: int = 0, imm: int | None = None,
            lane: int = 0) -> int:
     """Pack one instruction. imm goes into imm18, or imm22 for li/lui; lane
-    (dp4ab) into bits 3..0 of an R-type word."""
+    (dp4ab's lane, mmar's row) into bits 3..0 of an R-type word."""
     if not 0 <= lane < 16:
         raise ValueError(f"lane {lane} is not in 0..15")
     for name, r in (("rd", rd), ("rs1", rs1), ("rs2", rs2)):
@@ -266,6 +277,7 @@ class Decoded:
 
     @property
     def lane(self) -> int:
+        """dp4ab's source lane, mmar's accumulator row."""
         return self.imm18 & 0xF
 
 
@@ -305,6 +317,10 @@ def disassemble(word: int, symbols: dict[int, str] | None = None) -> str:
         return f"{m} r{d.rd}, r{d.rs1}, r{d.rs2}"
     if f == "rrrl":
         return f"{m} r{d.rd}, r{d.rs1}, r{d.rs2}, {d.lane}"
+    if f == "rr":
+        return f"{m} r{d.rs1}, r{d.rs2}"
+    if f == "rl":
+        return f"{m} r{d.rd}, {d.lane}"
     if f == "rri":
         return f"{m} r{d.rd}, r{d.rs1}, {d.imm18}"
     if f == "ld":
@@ -355,6 +371,7 @@ def verilog_header() -> str:
     out.append(f"`define RB_HOST_CSR_BASE  24'h{HOST_CSR_BASE:06X}")
     out.append(f"`define RB_FEATURE_DP4A   8'h{FEATURE_DP4A:02X}")
     out.append(f"`define RB_FEATURE_SCOREBOARD 8'h{FEATURE_SCOREBOARD:02X}")
+    out.append(f"`define RB_FEATURE_MMA    8'h{FEATURE_MMA:02X}")
     out.append(f"`define RB_HW_VERSION     8'd{HW_VERSION}")
     out += ["", "`endif", ""]
     return "\n".join(out)

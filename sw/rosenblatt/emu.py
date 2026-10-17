@@ -7,8 +7,8 @@ wins" when several lanes of one store hit the same byte.
 
 It is not cycle accurate (blocks run one after another, warps take turns one
 instruction at a time) but it does count the events that decide performance on
-the real design: instructions, active lanes, coalesced global-memory requests
-and shared-memory bank wavefronts.
+the real design: instructions, active lanes, coalesced global-memory requests,
+shared-memory bank wavefronts and matrix-unit steps.
 """
 
 from __future__ import annotations
@@ -45,6 +45,7 @@ class Config:
     park: bool = False          # warps sleep (instead of retrying) while the LSU is busy; timing only
     gmem_line_bytes: int = 4    # bytes per global-memory load (4, 8, 16 or 32): lanes in one line coalesce; stores coalesce per word
     scoreboard: bool = False    # a global load stalls only instructions that use its register (else the warp); timing only
+    mma: bool = False           # matrix unit: mma, mmaz, mmar (needs dp4a)
 
     @property
     def max_threads(self) -> int:
@@ -68,6 +69,7 @@ class Config:
             "PARK": int(self.park),
             "GMEM_LINE": self.gmem_line_bytes,
             "SCOREBOARD": int(self.scoreboard),
+            "ENABLE_MMA": int(self.mma),
         }
 
 
@@ -95,6 +97,7 @@ class Warp:
     stack: list[tuple[int, int]] = field(default_factory=list)
     state: int = READY
     unwind: bool = False
+    acc: list[list[int]] = field(default_factory=list)   # mma tile: acc[lane][row], undefined until mmaz
 
 
 class Emulator:
@@ -156,7 +159,8 @@ class Emulator:
             for lane in range(W):
                 if w * W + lane < ntid:
                     mask |= 1 << lane
-            warps.append(Warp(w, self._entry, mask, [[0] * isa.NUM_REGS for _ in range(W)]))
+            warps.append(Warp(w, self._entry, mask, [[0] * isa.NUM_REGS for _ in range(W)],
+                              acc=[[0] * W for _ in range(W)]))
         self._smem = bytearray(cfg.smem_bytes)
         self._block = (ctaid, ntid, nctaid, core_id)
         steps = 0
@@ -263,6 +267,11 @@ class Emulator:
             warp.pc += 1
             return
 
+        if op in (Op.MMA, Op.MMAZ, Op.MMAR):  # ------------------ matrix unit
+            self._matrix(warp, d, lanes)
+            warp.pc += 1
+            return
+
         # -------------------------------------------------------- control
         if op == Op.LI or op == Op.LUI:
             v = (d.imm22 if op == Op.LI else d.imm22 << 10) & MASK32
@@ -307,6 +316,36 @@ class Emulator:
         else:
             self._error(f"illegal opcode 0x{op:02x} at pc {warp.pc}")
             warp.pc += 1
+
+    def _matrix(self, warp: Warp, d: isa.Decoded, lanes: list[int]) -> None:
+        """The warp's accumulator tile C (W x W int32; lane i holds column i).
+
+        mma:  C[j][i] += dot4(lane j's rs1, lane i's rs2), for every row j and
+              every active lane i: an (W x 4) x (4 x W) int8 matrix product
+        mmaz: C[j][i] = 0 for the active lanes i
+        mmar: rd = C[row][i], row taken modulo W
+        """
+        cfg, W = self.cfg, self.cfg.num_lanes
+        if not (cfg.mma and cfg.dp4a):
+            self._error(f"{isa.BY_OPCODE[d.opcode].mnemonic} needs the matrix unit (mma and dp4a), "
+                        f"which is not enabled (pc {warp.pc})")
+            return
+        R = warp.regs
+        if d.opcode == Op.MMAR:
+            if d.rd:
+                for lane in lanes:
+                    R[lane][d.rd] = warp.acc[lane][d.lane % W]
+            return
+        self.stats["mma_steps"] += W
+        if d.opcode == Op.MMAZ:
+            for lane in lanes:
+                warp.acc[lane] = [0] * W
+            return
+        a = [R[j][d.rs1] for j in range(W)]   # row j of A: lane j's rs1, whether or not it is active
+        for lane in lanes:
+            b, col = R[lane][d.rs2], warp.acc[lane]
+            for j in range(W):
+                col[j] = self._alu(Fn.DP4A, a[j], b, col[j])
 
     def _alu(self, fn: int, a: int, b: int, c: int) -> int:
         if fn == Fn.ADD:

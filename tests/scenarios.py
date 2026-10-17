@@ -231,6 +231,77 @@ def load_use_random(dev: Device, seed: int, n_ops: int = 160) -> Outcome:
     return Outcome({"words": words}, [run])
 
 
+def mma_random(dev: Device, seed: int, n_ops: int = 120) -> Outcome:
+    """Random programs around the matrix unit (devices with mma only).
+
+    Every warp of two full blocks starts with mmaz and then mixes mma, mmaz and
+    mmar with ALU work, including dp4a and dp4ab (which hold the unit off the
+    dot-product multipliers), global loads (with the scoreboard: operands of an
+    mma still loading), divergent regions in which only some lanes' tile
+    columns change, and barriers. Each lane finally stores its column of the
+    tile and its registers. All the warps of a core compete for the unit.
+    """
+    cfg = dev.cfg
+    if not cfg.mma:
+        return Outcome()
+    rng = np.random.default_rng(seed)
+    W = cfg.num_lanes
+    nthreads = W * cfg.num_warps                       # full blocks: every lane exists
+    data = dev.upload(rng.integers(0, 2**32, 64, dtype=np.uint64).astype(np.uint32))
+    slot = 4 * (W + 12)                                 # per thread: its tile column, r2..r13
+    out = zeros(dev, 2 * nthreads * slot)
+
+    # r1: this lane's window into the data, r14: its output slot, r15: conditions.
+    src = ["s2r r2, %gtid", "andi r3, r2, 15", "shli r3, r3, 2", "s2r r1, %arg0", "add r1, r1, r3",
+           f"muli r2, r2, {slot}", "s2r r14, %arg1", "add r14, r14, r2"]
+    src += [f"ldw r{r}, [r1 + {4 * r}]" for r in range(2, 14)]
+    src.append("mmaz")
+    fns = ["add", "xor", "mul", "mad", "sub", "dp4a", "dp4ab"]
+
+    def reg() -> int:
+        return int(rng.integers(2, 14))
+
+    def op(out_lines: list[str], allow_bar: bool) -> None:
+        kind = rng.random()
+        if kind < 0.3:
+            out_lines.append(f"mma r{reg()}, r{reg()}")
+        elif kind < 0.36:
+            out_lines.append("mmaz")
+        elif kind < 0.5:
+            out_lines.append(f"mmar r{reg()}, {int(rng.integers(0, 16))}")
+        elif kind < 0.75:
+            fn = fns[int(rng.integers(len(fns)))]
+            lane = f", {int(rng.integers(0, 16))}" if fn == "dp4ab" else ""
+            out_lines.append(f"{fn} r{reg()}, r{reg()}, r{reg()}{lane}")
+        elif kind < 0.92:
+            out_lines.append(f"ldw r{reg()}, [r1 + {4 * int(rng.integers(0, 48))}]")
+        elif allow_bar:
+            out_lines.append("bar")
+        else:
+            out_lines.append(f"addi r{reg()}, r{reg()}, {int(rng.integers(-99, 99))}")
+
+    for _ in range(n_ops):
+        if rng.random() < 0.85:
+            op(src, allow_bar=True)
+        else:   # some lanes only: by lane number, or by data (then some warps skip it)
+            if rng.random() < 0.5:
+                src += ["s2r r15, %laneid", f"andi r15, r15, {int(rng.integers(1, W))}"]
+            else:
+                src.append(f"andi r15, r{reg()}, {1 << int(rng.integers(0, 8))}")
+            src.append("if.nz r15")
+            for _ in range(int(rng.integers(1, 4))):
+                op(src, allow_bar=False)
+            src.append("endif")
+    for j in range(W):
+        src += [f"mmar r15, {j}", f"stw [r14 + {4 * j}], r15"]
+    src += [f"stw [r14 + {4 * (W + r - 2)}], r{r}" for r in range(2, 14)]
+    src.append("ret")
+    dev.load(assemble("\n".join(src)))
+    run = dev.launch(grid=2, block=nthreads, args=[data, out])
+    words = dev.download(out, 2 * nthreads * slot // 4, np.uint32).reshape(2 * nthreads, -1)
+    return Outcome({"tile": words[:, :W], "regs": words[:, W:]}, [run])
+
+
 # ---------------------------------------------------- random divergence stress
 
 
@@ -561,8 +632,8 @@ def mlp_trained(dev: Device, seed: int) -> Outcome:
 
 def mlp_tiled(dev: Device, seed: int) -> Outcome:
     """Batched, shared-memory tiled inference (BatchMLP) with padded odd sizes,
-    with and without DP4A, both weight layouts, dp4ab broadcasts and
-    double-buffered tiles.
+    with and without DP4A, both weight layouts, dp4ab broadcasts,
+    double-buffered tiles and the matrix unit.
 
     Only meaningful on devices with 32-thread blocks; elsewhere it does nothing.
     """
@@ -597,6 +668,13 @@ def mlp_tiled(dev: Device, seed: int) -> Outcome:
             np.testing.assert_array_equal(res.logits, model.logits(q0))
             outcome.outputs[f"logits_bcast_{int(dbuf)}"] = res.logits
             outcome.runs.extend(res.runs)
+        if dev.cfg.mma:
+            for dbuf, layout in ((False, "rows"), (True, "interleaved")):
+                res = BatchMLP(dev, model, batch=11, mma=True, dbuf=dbuf, layout=layout).run(q0)
+                np.testing.assert_array_equal(res.hidden, model.hidden(q0))
+                np.testing.assert_array_equal(res.logits, model.logits(q0))
+                outcome.outputs[f"logits_mma_{int(dbuf)}"] = res.logits
+                outcome.runs.extend(res.runs)
     return outcome
 
 
@@ -606,6 +684,7 @@ SCENARIOS = {
     "special_regs": special_regs,
     "alu_random": alu_random,
     "load_use_random": load_use_random,
+    "mma_random": mma_random,
     "divergence_random": divergence_random,
     "memory_patterns": memory_patterns,
     "reduce_sum": reduce_sum,

@@ -1,8 +1,9 @@
 # Rosenblatt ISA
 
-Fifty-one instructions, 32 bits each: sixteen ALU operations in register and
-immediate forms, `dp4ab`, ten loads and stores, and nine control instructions. Every
-thread has sixteen 32-bit registers (`r0` is always zero). The definitions live in one place,
+Fifty-four instructions, 32 bits each: sixteen ALU operations in register and
+immediate forms, `dp4ab`, three matrix instructions, ten loads and stores, and
+nine control instructions. Every thread has sixteen 32-bit registers (`r0` is
+always zero). The definitions live in one place,
 `sw/rosenblatt/isa.py`; the assembler, the emulator and the Verilog
 (`rtl/rb_isa.vh` is generated from it) all read them from there.
 
@@ -25,7 +26,7 @@ typically device addresses and sizes. Memory is byte addressed and little-endian
  31    26 25  22 21  18 17  14 13             0
 +--------+------+------+------+----------------+
 | opcode |  rd  | rs1  | rs2  |    unused      |  R-type  rd = rs1 OP rs2
-| opcode |  rd  | rs1  | rs2  | unused  | lane |  dp4ab (lane in bits 3..0)
+| opcode |  rd  | rs1  | rs2  | unused  | lane |  dp4ab, mmar (lane or row in bits 3..0)
 | opcode |  rd  | rs1  |     imm18 (signed)    |  I-type  rd = rs1 OP imm
 | opcode |  rd  |         imm22 (signed)       |  J-type  li / lui
 +--------+------+------+------+----------------+
@@ -80,6 +81,42 @@ int8 values by a 4x8 tile across the warp: a matrix instruction spread over
 eight issue slots. The tiled network kernel uses it to read each input word
 from shared memory once per warp instead of once per image
 (`BatchMLP(..., bcast=True)`).
+
+### The matrix unit: `mma`, `mmaz`, `mmar` (opcodes `0x3B`-`0x3D`)
+
+Optional (`ENABLE_MMA`, which also needs `ENABLE_DP4A`). Each warp owns a
+W x W tile C of 32-bit accumulators (8 x 8 with 8-lane warps). The tile lives
+in the matrix unit, not in the register file; lane i holds column i.
+
+| Instruction | Meaning |
+| --- | --- |
+| `mma ra, rb` | C += A x B. Row j of the W x 4 int8 matrix A is lane j's `ra`; column i of the 4 x W matrix B is lane i's `rb`. So C[j][i] += the sum of the four products of the signed bytes of lane j's `ra` and lane i's `rb` |
+| `mmaz` | C[j][i] = 0 for every row j of each active lane's column i |
+| `mmar rd, row` | rd = C[row][i] in each active lane i (row modulo the warp width) |
+
+Only the active lanes' columns change, but every lane's `ra` supplies its
+row, active or not; a row taken from a lane whose thread does not exist is
+undefined. The accumulators wrap around at 32 bits, and the tile is undefined
+until `mmaz`. The `rd` field of `mma` is reserved (zero).
+
+With 8 lanes one `mma` is 64 dot products, 256 multiply-adds: in CUDA terms
+`acc[j] += __dp4a(__shfl_sync(mask, a, j), b)` for every j, in one
+instruction. It is a small relative of NVIDIA's warp-wide `mma.sync`
+tensor-core instruction (whose int8 shapes start at m8n8k16), with the
+accumulators kept outside the registers.
+
+`mma` and `mmaz` run asynchronously: they hand their operands to the matrix
+unit, and the warp carries on. Only the warp's next `mma`, `mmaz` or `mmar`
+waits until the unit is done. The results are always those of executing the
+instructions one at a time: overwriting `ra` or `rb` after an `mma` does not
+change it, and `mmar` sees every earlier `mma`. The tiled network kernel
+spends three instructions per weight word:
+
+```
+        ldw   w, [pw]           ; this lane's neuron: four weights
+        lds   x, [u]            ; image laneid: four inputs
+        mma   x, w              ; tile row b += image b's inputs . each lane's weights
+```
 
 ## Memory (opcodes `0x20`-`0x2F`)
 

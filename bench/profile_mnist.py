@@ -95,6 +95,11 @@ def experiments() -> dict[str, Spec]:
     exp["dbuf_bcast_tiled"] = ({}, "tiled", True, TILED_COUNT, "rows", {"bcast": True, "dbuf": True})
     exp["dbuf_bcast_scoreboard_line32_tiled"] = ({"scoreboard": True, "gmem_line_bytes": 32}, "tiled", True,
                                                  TILED_COUNT, "interleaved", {"bcast": True, "dbuf": True})
+    # 12. the matrix unit: one mma per weight word instead of eight dp4ab; the
+    #     unit computes the tile's rows while the warps issue their loads
+    exp["mma_tiled"] = ({"mma": True}, "tiled", True, TILED_COUNT, "rows", {"mma": True})
+    exp["mma_scoreboard_line32_tiled"] = ({"mma": True, "scoreboard": True, "gmem_line_bytes": 32}, "tiled",
+                                          True, TILED_COUNT, "interleaved", {"mma": True})
     return exp
 
 
@@ -108,6 +113,7 @@ def run_one(name: str, spec: Spec) -> dict:
         "RB_WORKLOAD": workload, "RB_DP4A": "1" if dp4a else "0", "RB_COUNT": str(count),
         "RB_LAYOUT": layout, "RB_UNROLL": str(opts.get("unroll", 1)),
         "RB_BCAST": "1" if opts.get("bcast") else "0", "RB_DBUF": "1" if opts.get("dbuf") else "0",
+        "RB_MMA": "1" if opts.get("mma") else "0",
         "RB_OUT": str(out),
     }, build_tag=name)
     if not out.exists():

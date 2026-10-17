@@ -39,6 +39,9 @@
 `define RB_OP_BAR    6'h38
 `define RB_OP_RET    6'h39
 `define RB_OP_DP4AB  6'h3A
+`define RB_OP_MMA    6'h3B
+`define RB_OP_MMAZ   6'h3C
+`define RB_OP_MMAR   6'h3D
 
 `define RB_SR_TID    5'd0
 `define RB_SR_NTID   5'd1
@@ -87,12 +90,14 @@
 `define RB_PERF_LSU_BUSY    4'd11
 `define RB_PERF_DIVERGE     4'd12
 `define RB_PERF_BLOCKS      4'd13
-`define RB_NUM_PERF 14
+`define RB_PERF_MMA_STEPS   4'd14
+`define RB_NUM_PERF 15
 
 `define RB_HOST_IMEM_BASE 24'h100000
 `define RB_HOST_CSR_BASE  24'h200000
 `define RB_FEATURE_DP4A   8'h01
 `define RB_FEATURE_SCOREBOARD 8'h02
+`define RB_FEATURE_MMA    8'h04
 `define RB_HW_VERSION     8'd1
 
 `endif

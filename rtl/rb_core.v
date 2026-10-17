@@ -26,6 +26,17 @@
 // until those registers arrive). One warp can then have several loads in
 // flight. Stores never stall the warp in that mode.
 //
+// Matrix unit (ENABLE_MMA = 1, needs ENABLE_DP4A): `mma ra, rb` multiplies a
+// W x 4 int8 matrix A (row j = lane j's ra) by a 4 x W one B (column i = lane
+// i's rb) into the warp's W x W int32 accumulator tile, which lives in the
+// unit, not in the register file. The instruction leaves the pipeline in S2
+// like any other: its operands are copied into the warp's slot, and the unit
+// then computes one row of the tile per cycle on the lanes' dot-product
+// multipliers, which it borrows whenever the instruction in S2 is not a dp4a.
+// The warp runs on meanwhile; only its next mma, mmaz or mmar waits (WS_MMA)
+// until the unit has finished with it. `mmar rd, j` copies row j of the tile
+// into a register, and `mmaz` clears the tile.
+//
 // Divergence: when the threads of a warp disagree on a branch, the warp runs
 // the fall-through threads first and pushes {target, taken threads} on a
 // per-warp stack. `ssy` pushes a reconvergence point and `sync` pops the stack
@@ -47,7 +58,8 @@ module rb_core #(
     parameter ENABLE_DP4A = 1,
     parameter LSU_DEPTH   = 4,    // global memory instructions in flight per core
     parameter PARK        = 0,    // 1: a warp that finds the LSU busy sleeps until it is free
-    parameter SCOREBOARD  = 0     // 1: a global load stalls only the instructions that use its register
+    parameter SCOREBOARD  = 0,    // 1: a global load stalls only the instructions that use its register
+    parameter ENABLE_MMA  = 0     // 1: the matrix unit (mma, mmaz, mmar); needs ENABLE_DP4A
 ) (
     input  wire                       clk,
     input  wire                       rst,
@@ -89,6 +101,8 @@ module rb_core #(
     localparam WS_DONE = 3'd0, WS_READY = 3'd1, WS_BUSY = 3'd2, WS_MEM = 3'd3, WS_BAR = 3'd4;
     localparam WS_LSU  = 3'd5;   // parked: its global memory instruction found the LSU busy
     localparam WS_DEP  = 3'd6;   // scoreboard: waits for registers that loads have not filled yet
+    localparam WS_MMA  = 3'd7;   // waits for its previous mma/mmaz to finish
+    localparam MMA     = ENABLE_MMA && ENABLE_DP4A;
 
     function [LB:0] popcount(input [W-1:0] m);
         integer k;
@@ -118,6 +132,10 @@ module rb_core #(
     // scoreboard (SCOREBOARD = 1): registers of each warp that a load will still write
     reg  [15:0]         pend     [0:NW-1];
     reg  [15:0]         dep_need [0:NW-1];  // the registers a sleeping warp waits for
+
+    // matrix unit (MMA): each warp has at most one mma/mmaz in the unit
+    reg  [NW-1:0]       mq;                 // waiting for the unit
+    reg  [NW-1:0]       mma_pend;           // waiting, executing, or its last row not yet written
 
     // LSU interface (driven further down)
     wire                lsu_ready, lsu_idle;
@@ -208,18 +226,25 @@ module rb_core #(
     wire s1_is_bar  = s1_op == `RB_OP_BAR;
     wire s1_is_ret  = s1_op == `RB_OP_RET;
     wire s1_is_dp4ab = (s1_op == `RB_OP_DP4AB) && ENABLE_DP4A;   // dp4a, rs1 from one lane
+    wire s1_is_mma   = (s1_op == `RB_OP_MMA)  && MMA;            // matrix unit
+    wire s1_is_mmaz  = (s1_op == `RB_OP_MMAZ) && MMA;
+    wire s1_is_mmar  = (s1_op == `RB_OP_MMAR) && MMA;
     wire s1_illegal = !(s1_is_alu | s1_is_mem | s1_is_li | s1_is_lui | s1_is_s2r | s1_is_bz |
-                        s1_is_bnz | s1_is_ssy | s1_is_sync | s1_is_bar | s1_is_ret | s1_is_dp4ab);
+                        s1_is_bnz | s1_is_ssy | s1_is_sync | s1_is_bar | s1_is_ret | s1_is_dp4ab |
+                        s1_is_mma | s1_is_mmaz | s1_is_mmar);
 
     // registers the instruction reads or writes, checked against the scoreboard
-    wire        s1_reads_rs1 = s1_is_alu | s1_is_dp4ab | s1_is_mem | s1_is_bz | s1_is_bnz;
-    wire        s1_reads_rs2 = (s1_is_alu && !s1_op[4]) | s1_is_dp4ab;
-    wire        s1_uses_rd   = s1_is_alu | s1_is_dp4ab | s1_is_mem | s1_is_li | s1_is_lui | s1_is_s2r;
+    wire        s1_reads_rs1 = s1_is_alu | s1_is_dp4ab | s1_is_mem | s1_is_bz | s1_is_bnz | s1_is_mma;
+    wire        s1_reads_rs2 = (s1_is_alu && !s1_op[4]) | s1_is_dp4ab | s1_is_mma;
+    wire        s1_uses_rd   = s1_is_alu | s1_is_dp4ab | s1_is_mem | s1_is_li | s1_is_lui | s1_is_s2r |
+                               s1_is_mmar;
     wire [15:0] s1_regs      = (s1_reads_rs1 ? 16'd1 << s1_rs1 : 16'd0) |
                                (s1_reads_rs2 ? 16'd1 << s1_rs2 : 16'd0) |
                                (s1_uses_rd   ? 16'd1 << s1_rd  : 16'd0);
-    wire        s1_hazard    = SCOREBOARD && s1_valid && !s1_unwind &&
-                               (pend[s1_warp] & s1_regs) != 16'd0;
+    wire        s1_reg_wait  = SCOREBOARD && (pend[s1_warp] & s1_regs) != 16'd0;
+    // the warp's next matrix instruction waits until its last mma/mmaz is done
+    wire        s1_mma_wait  = (s1_is_mma | s1_is_mmaz | s1_is_mmar) && mma_pend[s1_warp];
+    wire        s1_hazard    = s1_valid && !s1_unwind && (s1_reg_wait || s1_mma_wait);
 
     wire [RFA-1:0] rf_ra = {s1_warp, s1_rs1};
     wire [RFA-1:0] rf_rb = {s1_warp, s1_rs2};
@@ -233,7 +258,9 @@ module rb_core #(
     reg [31:0]        s2_imm18, s2_imm22;
     reg s2_alu, s2_imm, s2_mem, s2_li, s2_lui, s2_s2r, s2_bz, s2_bnz;
     reg s2_bcast;                     // dp4ab: rs1 comes from lane s2_lane
-    reg [LB-1:0] s2_lane;
+    reg [LB-1:0] s2_lane;             // dp4ab's lane, mmar's tile row
+    reg s2_mma, s2_mmaz, s2_mmar;
+    reg s2_dot;                       // dp4a or dp4ab: needs the dot-product path
     reg s2_ssy, s2_sync, s2_bar, s2_ret, s2_illegal, s2_writes;
     always @(posedge clk) begin
         s2_valid   <= rst ? 1'b0 : s1_valid && !s1_hazard;
@@ -248,6 +275,10 @@ module rb_core #(
         s2_imm     <= s1_op[4] && !s1_is_dp4ab;
         s2_bcast   <= s1_is_dp4ab;
         s2_lane    <= s1_instr[LB-1:0];
+        s2_mma     <= s1_is_mma;
+        s2_mmaz    <= s1_is_mmaz;
+        s2_mmar    <= s1_is_mmar;
+        s2_dot     <= (s1_is_alu && s1_op[3:0] == `RB_FN_DP4A) | s1_is_dp4ab;
         s2_mem     <= s1_is_mem;
         s2_li      <= s1_is_li;
         s2_lui     <= s1_is_lui;
@@ -259,13 +290,14 @@ module rb_core #(
         s2_bar     <= s1_is_bar;
         s2_ret     <= s1_is_ret;
         s2_illegal <= s1_illegal;
-        s2_writes  <= (s1_is_alu | s1_is_dp4ab | s1_is_li | s1_is_lui | s1_is_s2r) && s1_rd != 4'd0;
+        s2_writes  <= (s1_is_alu | s1_is_dp4ab | s1_is_li | s1_is_lui | s1_is_s2r | s1_is_mmar) &&
+                      s1_rd != 4'd0;
     end
 
     // ======================================================= S2: execute
     wire [W-1:0]    M = amask[s2_warp];
     wire [W-1:0]    cond;       // per lane: rs1 != 0
-    wire [W*32-1:0] ex_result;  // per lane: value for rd (li, lui, s2r; ALU results come in S3)
+    wire [W*32-1:0] ex_result;  // per lane: value for rd (li, lui, s2r, mmar; ALU results come in S3)
     wire [W*32-1:0] alu_res;    // per lane: ALU result of the instruction now in S3
     wire [W*32-1:0] mem_addr;   // per lane: rs1 + imm
     wire [W*32-1:0] st_data;    // per lane: rd (store data)
@@ -302,6 +334,33 @@ module rb_core #(
         endcase
     end
 
+    // ---- matrix unit (MMA): the sequencer is further down. It runs warp
+    // ex_warp's mma/mmaz, row ex_k of the tile per step; a row's result is
+    // written back one cycle later (wb_*), from the ALUs' second stage.
+    reg  [W-1:0]    mmask [0:NW-1];  // per warp: the tile columns (lanes) its operation writes
+    reg  [NW-1:0]   mzero;           // per warp: the operation is mmaz
+    reg             ex_busy;
+    reg  [WB-1:0]   ex_warp;
+    reg  [LB-1:0]   ex_k;
+    reg             wb_v, wb_last;
+    reg  [WB-1:0]   wb_w;
+    reg  [LB-1:0]   wb_k;
+    wire            mma_enq = s2_valid && (s2_mma || s2_mmaz);   // copy operands into the slot
+    // a step waits while the instruction in S2 needs the dot-product path
+    // (dp4a, dp4ab) or the tile's read port (mmar). s2_mmar alone is not
+    // enough to take the port: an mmar dropped in S1 leaves it set.
+    wire            mmar_rd = s2_valid && s2_mmar;
+    wire            ex_go   = MMA && ex_busy && !(s2_valid && s2_dot) && !mmar_rd;
+    wire [W*32-1:0] mx_all;          // per lane: rs1 from the executing warp's slot
+    reg  [31:0]     x_row;           // row ex_k of A: lane ex_k's rs1, for every lane
+    always @* begin : p_xrow
+        integer i;
+        x_row = mx_all[31:0];
+        for (i = 1; i < W; i = i + 1)
+            if (ex_k == i) x_row = mx_all[i*32 +: 32];
+        if (mzero[ex_warp]) x_row = 32'd0;   // mmaz: every product and the old value are zero
+    end
+
     // dp4ab: one lane's rs1 operand is broadcast to every lane's ALU
     wire [W*32-1:0] qa_all;
     reg  [31:0]     qa_lane;
@@ -316,7 +375,7 @@ module rb_core #(
     generate
         for (gl = 0; gl < W; gl = gl + 1) begin : g_lane
             localparam [LB-1:0] LANE = gl;
-            wire [31:0] qa, qb, qc, alu_y;
+            wire [31:0] qa, qb, qc, alu_y, dot_y, acc_q, mw_q;
             assign qa_all[gl*32 +: 32] = qa;
             rb_regfile #(.AW(RFA)) u_rf (
                 .clk(clk), .ra(rf_ra), .rb(rf_rb), .rc(rf_rc),
@@ -326,14 +385,40 @@ module rb_core #(
             // two stages: operands in S2, result (alu_y) in S3
             rb_alu #(.MUL_WIDTH(MUL_WIDTH), .ENABLE_DP4A(ENABLE_DP4A)) u_alu (
                 .clk(clk), .fn(s2_bcast ? `RB_FN_DP4A : s2_op[3:0]), .a(qa),
-                .a_dot(s2_bcast ? qa_lane : qa), .b(s2_imm ? s2_imm18 : qb), .c(qc), .y(alu_y)
+                .a_dot(s2_bcast ? qa_lane : qa), .b(s2_imm ? s2_imm18 : qb), .c(qc),
+                .dot_sel(ex_go), .x_mma(x_row), .w_mma(mw_q),
+                .c_mma(mzero[ex_warp] ? 32'd0 : acc_q), .y(alu_y), .y_dot(dot_y)
             );
+            if (MMA) begin : g_mma
+                reg [31:0] acc [0:NW*W-1];   // this lane's column of every warp's tile
+                reg [31:0] mxs [0:NW-1];     // the slot: this lane's rs1 and rs2 for each warp
+                reg [31:0] mws [0:NW-1];
+`ifndef SYNTHESIS
+                integer i;
+                initial for (i = 0; i < NW * W; i = i + 1) acc[i] = 32'd0;
+`endif
+                always @(posedge clk) begin
+                    if (mma_enq) begin
+                        mxs[s2_warp] <= qa;
+                        mws[s2_warp] <= qb;
+                    end
+                    if (wb_v && mmask[wb_w][gl]) acc[{wb_w, wb_k}] <= dot_y;
+                end
+                // one read port (LUT RAM): mmar in S2, else the unit's next step
+                assign acc_q = acc[mmar_rd ? {s2_warp, s2_lane} : {ex_warp, ex_k}];
+                assign mw_q  = mws[ex_warp];
+                assign mx_all[gl*32 +: 32] = mxs[ex_warp];
+            end else begin : g_no_mma
+                assign acc_q = 32'd0;
+                assign mw_q  = 32'd0;
+                assign mx_all[gl*32 +: 32] = 32'd0;
+            end
             wire [31:0] tid = {{(32-WB-LB){1'b0}}, s2_warp, LANE};
             wire [31:0] srv = (sr_sel == `RB_SR_TID)    ? tid :
                               (sr_sel == `RB_SR_LANEID) ? {{(32-LB){1'b0}}, LANE} :
                               (sr_sel == `RB_SR_GTID)   ? base_q + tid : sr_shared;
             assign alu_res[gl*32 +: 32]   = alu_y;
-            assign ex_result[gl*32 +: 32] =
+            assign ex_result[gl*32 +: 32] = s2_mmar ? acc_q :
                                             s2_li  ? s2_imm22 :
                                             s2_lui ? {s2_imm22[21:0], 10'd0} : srv;
             assign cond[gl]              = qa != 32'd0;
@@ -422,7 +507,8 @@ module rb_core #(
                 end
             end
         end else begin
-            if (all_done && lsu_idle && !s1_valid && !s2_valid && !s3_valid) running <= 1'b0;
+            if (all_done && lsu_idle && (!MMA || mma_pend == {NW{1'b0}}) &&
+                !s1_valid && !s2_valid && !s3_valid) running <= 1'b0;
 
             for (w = 0; w < NW; w = w + 1) begin
                 if (issue && pick == w) wstate[w] <= WS_BUSY;
@@ -434,10 +520,11 @@ module rb_core #(
                 // an instruction that needs a register still loading is dropped in S1; the
                 // warp sleeps until those registers arrive and then fetches it again
                 if (s1_hazard && s1_warp == w) begin
-                    wstate[w]   <= WS_DEP;
+                    wstate[w]   <= s1_mma_wait ? WS_MMA : WS_DEP;
                     dep_need[w] <= s1_regs;
                 end
                 if (wstate[w] == WS_DEP && (pend[w] & dep_need[w]) == 16'd0) wstate[w] <= WS_READY;
+                if (MMA && wstate[w] == WS_MMA && !mma_pend[w]) wstate[w] <= WS_READY;
                 // parked warps retry once the LSU can take an instruction again
                 if (lsu_ready && wstate[w] == WS_LSU) wstate[w] <= WS_READY;
 
@@ -524,6 +611,58 @@ module rb_core #(
         .ev_gm_req(ev_gm_req)
     );
 
+    // ======================================================= matrix unit
+    // Warps queue their mma/mmaz in their own slot (mq); the unit serves them
+    // round robin, one tile row per step, and needs W steps per operation.
+    reg  [WB-1:0] mq_pick;
+    reg           mq_ok;
+    always @* begin : p_mq
+        integer k;
+        reg [WB-1:0] cand;
+        mq_pick = ex_warp;
+        mq_ok   = 1'b0;
+        for (k = NW; k >= 1; k = k - 1) begin   // lowest offset after ex_warp wins
+            cand = ex_warp + k[WB-1:0];
+            if (mq[cand]) begin
+                mq_pick = cand;
+                mq_ok   = 1'b1;
+            end
+        end
+    end
+    wire ex_last = ex_go && ex_k == W - 1;
+    always @(posedge clk) begin : p_mma
+        if (rst) begin
+            mq       <= {NW{1'b0}};
+            mma_pend <= {NW{1'b0}};
+            ex_busy  <= 1'b0;
+            ex_warp  <= {WB{1'b0}};
+            ex_k     <= {LB{1'b0}};
+            wb_v     <= 1'b0;
+            wb_last  <= 1'b0;
+        end else begin
+            wb_v    <= ex_go;
+            wb_last <= ex_last;
+            wb_w    <= ex_warp;
+            wb_k    <= ex_k;
+            if (ex_go) ex_k <= ex_k + 1'b1;
+            if (!ex_busy || ex_last) begin   // start the next queued operation, if any
+                ex_busy <= mq_ok;
+                if (mq_ok) begin
+                    ex_warp     <= mq_pick;
+                    ex_k        <= {LB{1'b0}};
+                    mq[mq_pick] <= 1'b0;
+                end
+            end
+            if (wb_v && wb_last) mma_pend[wb_w] <= 1'b0;   // its last row is in the tile
+            if (mma_enq) begin
+                mq[s2_warp]       <= 1'b1;
+                mma_pend[s2_warp] <= 1'b1;
+                mmask[s2_warp]    <= M;
+                mzero[s2_warp]    <= s2_mmaz;
+            end
+        end
+    end
+
     // ============================================ performance counters
     reg [31:0] cnt [0:`RB_NUM_PERF-1];
     wire committed = s2_valid && !s2_unwind && !replay;
@@ -546,6 +685,7 @@ module rb_core #(
             if (!lsu_idle)                          cnt[`RB_PERF_LSU_BUSY]    <= cnt[`RB_PERF_LSU_BUSY] + 1;
             if (s2_valid && divergent)              cnt[`RB_PERF_DIVERGE]     <= cnt[`RB_PERF_DIVERGE] + 1;
             if (start && !running)                  cnt[`RB_PERF_BLOCKS]      <= cnt[`RB_PERF_BLOCKS] + 1;
+            if (ex_go)                              cnt[`RB_PERF_MMA_STEPS]   <= cnt[`RB_PERF_MMA_STEPS] + 1;
         end
     end
 

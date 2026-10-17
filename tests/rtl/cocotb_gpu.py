@@ -29,7 +29,7 @@ from rosenblatt.emu import Config  # noqa: E402
 
 # counters that must agree exactly between the emulator and the hardware
 MATCHED_STATS = ["instructions", "lane_ops", "gmem_instr", "gmem_reqs", "gmem_lanes",
-                 "smem_instr", "smem_wavefronts", "divergent_branches", "blocks"]
+                 "smem_instr", "smem_wavefronts", "divergent_branches", "blocks", "mma_steps"]
 
 
 class CocotbBackend(BusBackend):
@@ -120,7 +120,7 @@ def run_scenarios(dut, cfg: Config, names: list[str], seeds: list[int]) -> list[
     hw = rtl.backend.read_config()
     for field in ("num_cores", "num_lanes", "num_warps", "imem_words", "gmem_bytes", "smem_bytes",
                   "stack_depth", "mul_width", "dp4a", "gmem_latency", "gmem_interval", "lsu_depth", "park",
-                  "gmem_line_bytes", "scoreboard"):
+                  "gmem_line_bytes", "scoreboard", "mma"):
         assert getattr(hw, field) == getattr(cfg, field), f"HWCFG {field}: {getattr(hw, field)} != {getattr(cfg, field)}"
     errors: list[str] = []
     for name in names:

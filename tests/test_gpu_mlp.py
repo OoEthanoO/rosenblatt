@@ -271,3 +271,28 @@ def test_double_buffered_tiles_match_and_need_bcast():
     np.testing.assert_array_equal(result.logits, model.logits(q0))
     with pytest.raises(ValueError, match="dbuf needs bcast"):
         BatchMLP(Device(EmuBackend()), model, batch=8, dbuf=True)
+
+
+@pytest.mark.parametrize("dbuf", [False, True], ids=["single", "double_buffered"])
+@pytest.mark.parametrize("layout", LAYOUTS)
+def test_matrix_unit_kernel_matches_and_saves_instructions(layout, dbuf):
+    model = QuantMLP.load()
+    q0 = np.random.default_rng(7).integers(0, 128, (13, model.w1.shape[1]), dtype=np.int32)
+    dev = lambda: Device(EmuBackend(Config(mma=True)))  # noqa: E731
+    bcast = BatchMLP(dev(), model, batch=13, layout=layout, bcast=True, dbuf=dbuf).run(q0)
+    mma = BatchMLP(dev(), model, batch=13, layout=layout, mma=True, dbuf=dbuf).run(q0)
+    for result in (bcast, mma):
+        np.testing.assert_array_equal(result.hidden, model.hidden(q0))
+        np.testing.assert_array_equal(result.logits, model.logits(q0))
+    count = lambda r, k: sum(run.stats.get(k, 0) for run in r.runs)  # noqa: E731
+    # one mma replaces eight dp4ab; the unit computes the same rows
+    assert count(mma, "instructions") < 0.6 * count(bcast, "instructions")
+    assert count(mma, "smem_wavefronts") == count(bcast, "smem_wavefronts")
+    assert count(mma, "mma_steps") > 0 and count(bcast, "mma_steps") == 0
+
+
+@pytest.mark.parametrize("cfg", [Config(), Config(dp4a=False, mma=True),
+                                 Config(num_lanes=4, num_warps=8, mma=True)])
+def test_matrix_unit_kernel_needs_the_unit_dp4a_and_eight_lanes(cfg):
+    with pytest.raises(ValueError, match="mma"):
+        BatchMLP(Device(EmuBackend(cfg)), rounding_model(), batch=8, mma=True)

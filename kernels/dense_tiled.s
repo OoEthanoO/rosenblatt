@@ -17,6 +17,12 @@
 ; dot products per weight word, instead of BT loads and BT dot products. The
 ; tile's rows are padded to RS bytes so the lanes' loads hit different banks.
 ;
+; With MMA (and BCAST's staging), `mma x, w` does all BT dot products of a
+; weight word in one instruction: row b of the warp's accumulator tile (image
+; b0 + b) gets lane b's input word times each lane's weight word. The tile
+; lives in the matrix unit, so r8 keeps the bias, and the epilogue reads the
+; tile back with mmar.
+;
 ; Layouts (bytes): X is B x K (int8 0..127), bias is NPAD int32, Y is B x NPAD
 ; (int8 when REQUANTIZE, else int32). W is NPAD x K int8, either row-major
 ; (INTERLEAVED 0: W[j][k] at j * K + k) or interleaved by words (INTERLEAVED 1:
@@ -28,6 +34,7 @@
 ;          LOG_NGROUPS (log2(NPAD / THREADS)), DP4A (0/1), REQUANTIZE (0/1),
 ;          INTERLEAVED (0/1), BCAST (0/1: needs DP4A and BT == lanes per warp),
 ;          DBUF (0/1: two tile buffers, one barrier per stage; needs BCAST),
+;          MMA (0/1: the matrix unit; needs BCAST),
 ;          with THREADS == BT * KC / 4 (each thread stages one word).
 ; args:    %arg0 X, %arg1 W, %arg2 bias, %arg3 Y, %arg4 K, %arg5 NPAD, %arg6 shift
 ; grid:    (B / BT) * (NPAD / THREADS) blocks of THREADS threads
@@ -44,6 +51,7 @@
 .alias  t,    r6
 .alias  u,    r7
                           ; r8 .. r8+BT-1: accumulators for images b0 .. b0+BT-1
+                          ; (MMA: r8 = bias[j]; the accumulators are the tile)
 
         ; ---- which tile: neuron group (low bits of ctaid) and image group
         s2r   t, %ctaid
@@ -67,9 +75,14 @@
         s2r   x, %arg2
         add   w, w, x
         ldw   w, [w]
+.if MMA
+        mov   r8, w                   ; added in the epilogue
+        mmaz                          ; this warp's BT x 8 tile of accumulators
+.else
 .rept   BT, b
         mov   r(8 + b), w
 .endr
+.endif
         ; gx = X + (b0 + tid / (KC/4)) * K + 4 * (tid % (KC/4))
         s2r   x, %tid
         shri  w, x, LOG_KC_WORDS
@@ -127,9 +140,13 @@ stage:  ; ---- 1. the block stages a BT x KC tile of X in shared memory
 .endif
 .if BCAST
         lds   x, [u + kw * 4]         ; word kw of image b0 + laneid
+.if MMA
+        mma   x, w                    ; tile row b += lane b's word . this lane's weights
+.else
 .rept   BT, b
         dp4ab r(8 + b), x, w, b       ; image b0 + b's word comes from lane b
 .endr
+.endif
 .else
 .if DP4A
 .rept   BT, b
@@ -180,7 +197,13 @@ stage:  ; ---- 1. the block stages a BT x KC tile of X in shared memory
         li    left, 1
         shl   left, left, gx          ; rounding constant 2^(shift-1)
 .rept   BT, b
+.if MMA
+        mmar  u, b
+        add   u, u, r8
+        add   u, u, left
+.else
         add   u, r(8 + b), left
+.endif
         sra   u, u, pw
         maxi  u, u, 0
         mini  u, u, 127
@@ -192,7 +215,13 @@ stage:  ; ---- 1. the block stages a BT x KC tile of X in shared memory
         add   t, t, x                 ; word address
         shli  w, w, 2
 .rept   BT, b
+.if MMA
+        mmar  u, b
+        add   u, u, r8
+        stw   [t], u
+.else
         stw   [t], r(8 + b)
+.endif
         add   t, t, w
 .endr
 .endif

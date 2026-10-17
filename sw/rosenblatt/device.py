@@ -91,6 +91,7 @@ class BusBackend(Backend):
             imem_words=1 << (c1 & 0xFF), gmem_bytes=4 << (c1 >> 8 & 0xFF),
             smem_bytes=4 << (c1 >> 16 & 0xFF), dp4a=bool(c1 >> 24 & isa.FEATURE_DP4A),
             scoreboard=bool(c1 >> 24 & isa.FEATURE_SCOREBOARD),
+            mma=bool(c1 >> 24 & isa.FEATURE_MMA),
             gmem_latency=c2 & 0xFF, stack_depth=c2 >> 8 & 0xFF, mul_width=c2 >> 16 & 0xFF,
         )
 
@@ -151,6 +152,7 @@ def _derived_stats(res: LaunchResult) -> dict[str, int]:
         "smem_wavefronts": t("smem_cycles"),
         "divergent_branches": t("diverge"),
         "blocks": t("blocks"),
+        "mma_steps": t("mma_steps"),
     }
 
 

@@ -21,6 +21,7 @@ the default build used for simulation has
 | `SCOREBOARD` | 0 | 1 = a global load stalls only the instructions that use its register, not the whole warp |
 | `MUL_WIDTH` | 32 | 16 = only the low 16 bits of each operand are multiplied |
 | `ENABLE_DP4A` | 1 | packed int8 dot-product instruction |
+| `ENABLE_MMA` | 0 | 1 = a matrix unit per core: `mma`, `mmaz`, `mmar` (needs `ENABLE_DP4A`) |
 
 ```
                        host bus (testbench, or the UART bridge on an FPGA)
@@ -93,6 +94,29 @@ through a single 8-to-1 multiplexer per core. The multiplexer feeds only the
 four 8-bit multipliers, through their own operand input (`a_dot`): wired to
 the ALU's general input, synthesis copied it into every lane's adders and
 shifters, and the GPU grew by a fifth instead of 4%.
+
+**Matrix unit** (`ENABLE_MMA`): `mma ra, rb` multiplies an 8x4 int8 tile
+(row j: lane j's `ra`) by a 4x8 one (column i: lane i's `rb`) into the warp's
+8x8 tile of int32 accumulators (`isa.md`). The tile is not in the register
+file, which has one write port per lane; it sits in a small LUT RAM per lane
+(column i of every warp's tile in lane i). Each warp has a slot in the unit.
+In S2 an `mma` copies all lanes' `ra` and `rb` into its warp's slot and
+leaves the pipeline like an add. The unit takes the slots round robin and
+computes one row of the tile per cycle: row j's word goes to every lane through
+an 8-to-1 multiplexer, each lane adds its dot product with its own `rb` to
+column entry j, and the sum comes back from the ALU's second stage one cycle
+later. Eight cycles per `mma`; `mmaz` takes the same path with zeros.
+
+The unit has no multipliers of its own. It borrows each lane's four `dp4a`
+multipliers and their adder tree in every cycle in which the instruction in
+S2 is not a `dp4a` or `dp4ab` (the ALU's `dot_sel` input), and it also waits
+while an `mmar` in S2 uses the tile's read port. Meanwhile the rest of the
+pipeline keeps issuing: a kernel's loads, address arithmetic and branches run
+on the issue slots and the matrix arithmetic runs beside them. A warp may
+have one operation in the unit: its next `mma`, `mmaz` or `mmar` is dropped
+in S1 and the warp sleeps (`WS_MMA`) until the unit has written the last row.
+That is the whole hazard logic, because the slot holds copies of the
+operands and the tile is only ever read by `mmar`.
 
 **Divergence**: a branch evaluates its condition in every active lane. If
 the lanes disagree, the warp continues with the fall-through lanes and pushes
@@ -191,8 +215,9 @@ Per core: active cycles, committed instructions, active lanes, idle cycles
 (and how many of those had a warp waiting on memory), replays, global-memory
 instructions, requests and lanes (their ratio is the coalescing factor),
 shared-memory instructions and wavefronts (their ratio shows bank conflicts),
-LSU busy cycles, divergent branches and blocks. The emulator counts the same
-architectural events, and the RTL tests require both to agree exactly.
+LSU busy cycles, divergent branches, blocks and matrix-unit steps (one per
+tile row computed). The emulator counts the same architectural events, and
+the RTL tests require both to agree exactly.
 
 ## Verification
 
@@ -201,8 +226,9 @@ architectural events, and the RTL tests require both to agree exactly.
 - `tests/scenarios.py`: vector add, two matrix multiplies, special registers,
   random ALU programs, random nested divergence with loops and early returns
   (checked against a per-thread interpreter), random loads used at random
-  distances (the scoreboard's stress test), every load/store flavour,
-  barriers, and three neural-network paths.
+  distances (the scoreboard's stress test), random programs around the
+  matrix unit (`mma` with loads, `dp4a`s, divergence and barriers), every
+  load/store flavour, barriers, and three neural-network paths.
 - `tests/rtl/`: every scenario on the Verilog under four hardware
   configurations (outputs and event counters must match the emulator exactly),
   the UART bridge at the pin level, and the whole GPU driven through UART.

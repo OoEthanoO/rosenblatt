@@ -32,6 +32,7 @@ def metrics(r: dict) -> dict:
         "idle_mem": c["idle_mem"] / max(1, c["active"]),
         "replays_per_image": c["replays"] / n,
         "lane_util": c["lane_ops"] / max(1, c["issued"] * cfg["num_lanes"]),
+        "mma_busy": c.get("mma_steps", 0) / max(1, c["active"]),
         "correct": f"{r['correct']}/{n}",
     }
 
@@ -66,10 +67,10 @@ def main() -> int:
           "logit-for-logit against the NumPy reference. Default GPU: 2 cores x 8 lanes x "
           "4 warps, global memory latency 8 cycles, one 32-bit request per cycle.", ""]
 
-    def section(title: str, names: list[str], note: str = "") -> None:
+    def section(title: str, names: list[str], note: str = "", cols=COLS) -> None:
         rows = [(n, m[n]) for n in names if n in m]
         if rows:
-            md.extend([f"## {title}", ""] + ([note, ""] if note else []) + [table(rows, COLS), ""])
+            md.extend([f"## {title}", ""] + ([note, ""] if note else []) + [table(rows, cols), ""])
 
     section("Inference strategies", ["per_image_scalar", "per_image_dp4a", "tiled_scalar", "tiled_dp4a"])
     for w in ("per_image", "tiled"):
@@ -102,6 +103,14 @@ def main() -> int:
             "bcast: each lane loads one image's input word from shared memory and dp4ab hands it to "
             "every lane, instead of every lane loading every image's word. dbuf: two tile buffers, "
             "the next tile fetched while the current one is used, one barrier per stage.")
+    section("The matrix unit: one mma per weight word (tiled)",
+            ["tiled_dp4a", "bcast_tiled", "mma_tiled", "scoreboard_line32_tiled",
+             "bcast_scoreboard_line32_tiled", "mma_scoreboard_line32_tiled"],
+            "mma: lane b loads image b's input word from shared memory, as with bcast, and one mma "
+            "multiplies the warp's eight input words by its eight weight words. The matrix unit computes "
+            "one row of that 8x8 tile per cycle on the lanes' dot-product multipliers while the warps issue "
+            "their loads. Matrix unit busy: the share of a core's cycles in which it computed a row.",
+            COLS[:-1] + [("mma_busy", "matrix unit busy", ".0%"), COLS[-1]])
     section("One bottleneck after another (per_image)",
             ["per_image_dp4a", "line32_interleaved_per_image", "scoreboard_line32_per_image",
              "unroll2_scoreboard_line32_per_image", "lsu8_unroll2_scoreboard_line32_per_image"],
