@@ -116,7 +116,8 @@ on the issue slots and the matrix arithmetic runs beside them. A warp may
 have one operation in the unit: its next `mma`, `mmaz` or `mmar` is dropped
 in S1 and the warp sleeps (`WS_MMA`) until the unit has written the last row.
 That is the whole hazard logic, because the slot holds copies of the
-operands and the tile is only ever read by `mmar`.
+operands and the tile is only ever read by `mmar`. `HWCFG1`'s feature bits
+report the unit.
 
 **Divergence**: a branch evaluates its condition in every active lane. If
 the lanes disagree, the warp continues with the fall-through lanes and pushes

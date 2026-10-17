@@ -163,6 +163,21 @@ bcast: each lane loads one image's input word from shared memory and dp4ab hands
 | bcast_scoreboard_line32_tiled | 1,690 | 2,590 | 356 | 0.77 | 21% | 6% | 463 | 32/32 |
 | dbuf_bcast_scoreboard_line32_tiled | 1,736 | 2,698 | 358 | 0.78 | 21% | 7% | 443 | 32/32 |
 
+## The matrix unit: one mma per weight word (tiled)
+
+mma: lane b loads image b's input word from shared memory, as with bcast, and one mma multiplies the warp's eight input words by its eight weight words. The matrix unit computes one row of that 8x8 tile per cycle on the lanes' dot-product multipliers while the warps issue their loads. dbuf: the stage loop written for the unit, double-buffered tiles with the loads one stage ahead and each warp's last mma issued just before the barrier. Matrix unit busy: the share of a core's cycles in which it computed a row.
+
+| Experiment | cycles / image | warp instructions / image | global requests / image | IPC per core | memory port busy | issue slots lost to memory waits | replays / image | matrix unit busy | correct |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| tiled_dp4a | 3,139 | 4,108 | 2,100 | 0.65 | 67% | 14% | 870 | 0% | 32/32 |
+| bcast_tiled | 2,648 | 2,590 | 2,100 | 0.49 | 79% | 19% | 1,329 | 0% | 32/32 |
+| mma_tiled | 2,505 | 1,177 | 2,100 | 0.23 | 84% | 24% | 2,393 | 33% | 32/32 |
+| dbuf_mma_tiled | 2,435 | 1,288 | 2,136 | 0.26 | 88% | 20% | 2,459 | 34% | 32/32 |
+| scoreboard_line32_tiled | 2,385 | 4,108 | 356 | 0.86 | 15% | 2% | 412 | 0% | 32/32 |
+| bcast_scoreboard_line32_tiled | 1,690 | 2,590 | 356 | 0.77 | 21% | 6% | 463 | 0% | 32/32 |
+| mma_scoreboard_line32_tiled | 1,241 | 1,177 | 356 | 0.47 | 29% | 5% | 469 | 66% | 32/32 |
+| dbuf_mma_scoreboard_line32_tiled | 1,011 | 1,288 | 363 | 0.64 | 36% | 1% | 284 | 81% | 32/32 |
+
 ## One bottleneck after another (per_image)
 
 Each row adds one change to the row above: 32-byte lines with interleaved weights, the register scoreboard, the loop unrolled by two, an 8-instruction LSU queue.

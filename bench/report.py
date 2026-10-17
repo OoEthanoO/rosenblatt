@@ -33,6 +33,10 @@ def metrics(r: dict) -> dict:
         "replays_per_image": c["replays"] / n,
         "lane_util": c["lane_ops"] / max(1, c["issued"] * cfg["num_lanes"]),
         "mma_busy": c.get("mma_steps", 0) / max(1, c["active"]),
+        # lower bounds: the memory port serving one request per interval, the
+        # matrix units (one per core) computing one tile row per cycle
+        "port_floor": r["device_gmem_reqs"] * cfg["gmem_interval"] / n,
+        "mma_floor": c.get("mma_steps", 0) / cfg["num_cores"] / n,
         "correct": f"{r['correct']}/{n}",
     }
 
@@ -104,12 +108,14 @@ def main() -> int:
             "every lane, instead of every lane loading every image's word. dbuf: two tile buffers, "
             "the next tile fetched while the current one is used, one barrier per stage.")
     section("The matrix unit: one mma per weight word (tiled)",
-            ["tiled_dp4a", "bcast_tiled", "mma_tiled", "scoreboard_line32_tiled",
-             "bcast_scoreboard_line32_tiled", "mma_scoreboard_line32_tiled"],
+            ["tiled_dp4a", "bcast_tiled", "mma_tiled", "dbuf_mma_tiled", "scoreboard_line32_tiled",
+             "bcast_scoreboard_line32_tiled", "mma_scoreboard_line32_tiled", "dbuf_mma_scoreboard_line32_tiled"],
             "mma: lane b loads image b's input word from shared memory, as with bcast, and one mma "
             "multiplies the warp's eight input words by its eight weight words. The matrix unit computes "
             "one row of that 8x8 tile per cycle on the lanes' dot-product multipliers while the warps issue "
-            "their loads. Matrix unit busy: the share of a core's cycles in which it computed a row.",
+            "their loads. dbuf: the stage loop written for the unit, double-buffered tiles with the "
+            "loads one stage ahead and each warp's last mma issued just before the barrier. Matrix unit "
+            "busy: the share of a core's cycles in which it computed a row.",
             COLS[:-1] + [("mma_busy", "matrix unit busy", ".0%"), COLS[-1]])
     section("One bottleneck after another (per_image)",
             ["per_image_dp4a", "line32_interleaved_per_image", "scoreboard_line32_per_image",
@@ -219,6 +225,35 @@ def main() -> int:
         fig.legend(handles, labels, loc="upper center", ncol=2, frameon=False)
         fig.tight_layout(rect=(0, 0, 1, 0.92))
         fig.savefig(IMG / "memory_lines.png", dpi=150)
+        plt.close(fig)
+    # 5. the tiled kernel's dot products: per instruction, and in a unit beside the pipeline
+    groups = [("4-byte lines", ["tiled_dp4a", "bcast_tiled", "mma_tiled", "dbuf_mma_tiled"]),
+              ("32-byte lines + scoreboard", ["scoreboard_line32_tiled", "bcast_scoreboard_line32_tiled",
+                                              "mma_scoreboard_line32_tiled", "dbuf_mma_scoreboard_line32_tiled"])]
+    if all(k in m for _, ks in groups for k in ks):
+        labels = ["dp4a", "dp4ab", "mma", "mma, pipelined"]
+        colors = [grey, "#93c5fd", blue, "#1e3a8a"]
+        fig, ax = plt.subplots(figsize=(8, 3.8))
+        width = 0.2
+        for i, (lab, col) in enumerate(zip(labels, colors)):
+            xs = [g + (i - 1.5) * width for g in range(len(groups))]
+            vals = [m[ks[i]]["cycles_per_image"] for _, ks in groups]
+            bars = ax.bar(xs, vals, width=width, color=col, label=lab)
+            ax.bar_label(bars, labels=[f"{v:,.0f}" for v in vals], fontsize=8, padding=2)
+        # left: the memory port serving a request every cycle; right: the matrix units a row every cycle
+        floors = [m[groups[0][1][-1]]["port_floor"], m[groups[1][1][-1]]["mma_floor"]]
+        for g, y in enumerate(floors):
+            ax.hlines(y, g - 0.45, g + 0.45, colors=orange, linestyles=":",
+                      label="lower bound: memory port / matrix units always busy" if g == 0 else None)
+        ax.set_xticks(range(len(groups)), [g for g, _ in groups])
+        ax.set_ylabel("cycles per image")
+        ax.set_title("Tiled kernel: 8 dot products per instruction, then 64")
+        ax.yaxis.set_major_formatter(thousands)
+        handles, labels = ax.get_legend_handles_labels()   # the bars first, the bound last
+        ax.legend(handles[1:] + handles[:1], labels[1:] + labels[:1], frameon=False, loc="upper right", fontsize=9)
+        ax.set_ylim(0, max(m[k]["cycles_per_image"] for _, ks in groups for k in ks) * 1.4)
+        fig.tight_layout()
+        fig.savefig(IMG / "matrix_unit.png", dpi=150)
         plt.close(fig)
     print(f"charts written to {IMG}")
     return 0

@@ -13,12 +13,12 @@ times faster on the same problem.
 
 | | |
 | --- | --- |
-| Hardware | SIMT GPU, 2 cores x 8 lanes x 4 warps (parameterized), about 2,000 lines of Verilog |
-| Software | ISA, assembler, emulator, runtime and 6 kernels; about 6,600 lines of Python including tests and tools |
+| Hardware | SIMT GPU, 2 cores x 8 lanes x 4 warps (parameterized), about 2,200 lines of Verilog |
+| Software | ISA, assembler, emulator, runtime and 6 kernels; about 7,300 lines of Python including tests and tools |
 | Network | 784-64-10 MLP, int8, 97.80% on the MNIST test set (float32: 97.77%) |
 | Verified | every scenario bit-exact against the emulator on 4 hardware configurations; the full network over a simulated UART |
 | Baseline tiled kernel | 3,139 cycles per digit (32-image batch, 256 KiB RTL simulation, DP4A): 125.6 µs at 25 MHz |
-| Beyond the baseline | optional memory-system upgrades (11% more logic) and a cross-lane dot product (4%): with kernels written for them, one image 2.9x faster, tiled 1.86x |
+| Beyond the baseline | optional memory-system upgrades (11% more logic), a cross-lane dot product (4%) and a matrix unit (10%): with kernels written for them, one image 2.9x faster, tiled 3.1x |
 | FPGA | ULX3S ECP5-85F: the full design occupies 53% of the logic, with 64 KiB global memory and two supported PCB pinouts. Not yet run on a physical board |
 | RTX 5080 | the same network in 4.1 ns per digit (cuBLAS, tensor cores) |
 
@@ -159,6 +159,39 @@ lane per instruction. Rosenblatt's register files have one write port, so the
 tile takes eight issue slots. The hardware is one 8-to-1 multiplexer per core
 (section 4 measures what it buys).
 
+### A matrix unit beside the pipeline
+
+`mma ra, rb` (optional, `ENABLE_MMA`) does those eight `dp4ab`s in one
+instruction: it multiplies an 8x4 int8 tile (row j: lane j's `ra`) by a 4x8
+one (column i: lane i's `rb`) and adds the product to an 8x8 tile of int32
+accumulators. That is 64 results, eight per lane, and a lane's register file
+can write one register per cycle. The options:
+
+| Where the accumulators go | Cost |
+| --- | --- |
+| the register file, written over eight cycles | the write port is busy for eight cycles, and every other warp's results wait |
+| the register file, with more write ports or wider registers | the files are already stored three times for three read ports; eight write ports multiply that again |
+| somewhere else | instructions to clear the tile (`mmaz`) and to read it back (`mmar`) |
+
+Rosenblatt keeps them somewhere else: a small LUT RAM per lane holds that
+lane's column of every warp's tile. NVIDIA's data-center Blackwell GPUs
+likewise keep tensor-core accumulators in a separate tensor memory. An `mma`
+copies its operands from all eight lanes into its warp's slot in the matrix
+unit and then leaves the pipeline like an add. The unit computes one row of
+the tile per cycle; the warp runs on, and only its next matrix instruction
+waits for it.
+
+The unit has no multipliers of its own. It borrows each lane's four `dp4a`
+multipliers in every cycle in which the instruction in the execute stage is
+not a `dp4a`. On the 85F the DSP blocks are the scarce resource (112 of 156
+in use), and a second set of four per lane would not have fit. So `mma` adds
+no arithmetic. It changes what keeps the multipliers busy. With `dp4ab` it is
+the instruction stream, at one instruction per cycle at best and in the same
+issue slots as the loads, address updates and branches. With `mma` it is a
+unit that computes beside the pipeline while those instructions issue.
+Section 4 measures the difference, and section 5 the cost: multiplexers and
+LUT RAM, 10% more logic.
+
 ### Quantization without a multiplier
 
 The network runs entirely in integers: int8 weights and activations, int32
@@ -195,14 +228,20 @@ on both and requires **identical outputs and identical counters**:
   operands, store data, addresses of further loads and branch conditions,
   overwritten before their data arrives, and still in flight at a barrier or
   at the end of the kernel;
+- random programs around the matrix unit: `mma`, `mmaz` and `mmar` among
+  `dp4a`s (which hold the unit off the multipliers), loads still in flight,
+  divergent regions in which only some lanes' tile columns change, and
+  barriers, with all the warps of a core competing for the unit;
 - vector add, naive and tiled matrix multiply, a tree reduction;
-- the network three ways: one image at a time, batched and tiled, and the full
-  trained model, with both weight layouts;
+- the network three ways: one image at a time, batched and tiled (with every
+  kernel variant, the matrix unit's included), and the full trained model,
+  with both weight layouts;
 - four hardware configurations: the default; a 1-core 4-lane build with a
   16-bit multiplier, no DP4A, a one-instruction load/store queue and the
   register scoreboard; a 3-core build with slow memory, 8-byte lines, a
-  two-instruction queue and parked warps; and the default configuration with
-  32-byte global-memory lines and the scoreboard.
+  two-instruction queue, parked warps and a matrix unit with 4x4 tiles; and
+  the default configuration with 32-byte global-memory lines, the scoreboard
+  and the matrix unit.
 
 The UART bridge is tested at the pin level (corrupted frames, glitches, bad
 stop bits, ±1% baud error, stalled buses), and the production Python driver runs
@@ -215,7 +254,7 @@ measures against the NumPy reference.
 Every number in this section comes from cycle-accurate simulation of the
 Verilog (Icarus Verilog) running real MNIST test images, with every output score
 checked against the NumPy reference. `python bench/profile_mnist.py` reruns
-all 49 experiments; full tables are in
+all 53 experiments; full tables are in
 [bench/results/summary.md](../bench/results/summary.md). Unless stated
 otherwise the GPU is the default build: 2 cores x 8 lanes x 4 warps, global
 memory latency 8 cycles, one 32-bit request per cycle.
@@ -445,6 +484,61 @@ with the scoreboard and wide lines (1,736): swapping buffers costs three
 instructions per stage, more than the barrier it saves. The barriers were not
 what limited the kernel. The option stays in the code, off.
 
+### 64 dot products per instruction: mma
+
+With `dp4ab` the tiled kernel spends ten instructions per weight word, eight
+of them dot products, and a core issues at most one instruction per cycle.
+`mma` (section 2) does the eight in one instruction, so the inner loop is
+three: load the weight word, load the input word, `mma`. Instructions per
+digit fall from 2,590 to 1,177. The arithmetic does not change: the matrix
+unit computes the same 64 dot products on the same multipliers, one tile row
+per cycle, but beside the pipeline instead of in its issue slots.
+
+| Kernel | Memory system | Cycles per digit | Warp instructions | Matrix unit busy |
+| --- | --- | ---: | ---: | ---: |
+| `dp4ab` | 4-byte lines | 2,648 | 2,590 | |
+| `mma` | 4-byte lines | 2,505 | 1,177 | 33% |
+| `mma`, stage loop for the unit | 4-byte lines | 2,435 | 1,288 | 34% |
+| `dp4ab` | 32-byte lines, scoreboard | 1,690 | 2,590 | |
+| `mma` | 32-byte lines, scoreboard | 1,241 | 1,177 | 66% |
+| `mma`, stage loop for the unit | 32-byte lines, scoreboard | **1,011** | 1,288 | 81% |
+
+![tiled kernel by instruction and memory system](img/matrix_unit.png)
+
+With the default memory the kernel is bound by the memory port again: its
+2,100 requests per digit need at least 2,100 cycles, and the port is 88%
+busy. With 32-byte lines the port has room, and the matrix unit is the limit.
+Busy every cycle, it would take 822 cycles per digit: 1,644 tile rows per
+digit, on two cores.
+
+The first `mma` kernel kept the unit busy two thirds of the time. A
+cycle-by-cycle trace of one core showed when it starved. Within a stage it
+never stopped. At the end of every stage it stood idle for about 60 cycles
+while the warps passed a barrier, loaded the next tile's input words, waited
+11 cycles for them, stored them, passed a second barrier, and waited for
+their first weights. A warp can have one operation in the unit, and all
+four warps were busy with something else at the same time.
+
+Double-buffered tiles, which did not pay off with `dp4ab`, are the start of
+the fix, but only the start: a first double-buffered version, which still
+loaded the next tile right after the barrier, gained 4% (1,192 cycles). The
+stage loop that works (`BatchMLP(..., mma=True, dbuf=True)`) loads a stage
+ahead. Each warp fetches the next tile's input word and the next stage's
+first weight word before the barrier, does its bookkeeping while its
+previous `mma` computes, and issues the stage's last `mma` just before the
+barrier, so the unit is still busy while the warps pass it. After the barrier a warp needs three
+instructions to hand the unit its next `mma`. The unit is now busy 81% of
+the time, and the kernel takes 1,011 cycles per digit: 1.67x faster than with
+`dp4ab` and 3.1x faster than the baseline tiled kernel. Most of the rest is
+the barrier itself: a warp that arrives early has nothing left in the unit
+until the last warp arrives. A second slot per warp would let it carry work
+across.
+
+NVIDIA added asynchronous copies for the same reason (`cp.async` in Ampere,
+the Tensor Memory Accelerator in Hopper). Once tensor cores do the
+arithmetic, the rest of the SM's job is to keep them fed, and the data for
+the next step has to be on its way before it is needed.
+
 ## 5. On an FPGA
 
 The bring-up target is the ULX3S with an LFE5U-85F-6BG381C, built with Yosys,
@@ -482,6 +576,13 @@ What the FPGA work taught, in short (details in [fpga.md](fpga.md)):
 - **DSP blocks ran out before logic.** Seven per lane (3 for a 32-bit multiply,
   4 for DP4A) do not fit the 25F's 28. Hence the 16-bit multiplier option,
   which the kernels were already written to tolerate.
+- **Borrowing multipliers costs multiplexers.** The matrix unit adds no DSP
+  blocks, which the 85F could not spare: it borrows the DP4A multipliers
+  through a multiplexer on each of their inputs and keeps its accumulator
+  tiles and operand slots in LUT RAM. That is 10% more LUTs and 11% more
+  flip-flops. Routed for the 85F, the build with the unit uses 61% of the
+  logic cells (53% without it) and reaches 36.42 MHz against the 25 MHz
+  required. The unit is off in the board build.
 - **Timing pointed at the multiplier.** The first 25F build reached 28.5 MHz:
   register file, DSP multiplier, a long wire, then the adder tree of
   `dp4a`/`mad`, all in one cycle. Splitting the ALU over two pipeline stages
@@ -521,8 +622,10 @@ estimate from the 256 KiB simulation. The physical build has 64 KiB and
 streams eight-image batches, measured separately by
 [`bench/board.py`](fpga.md#benchmark-the-board); serial transfers add host
 time. The RTX 5080 runs the *same algorithm* in 7.2 ns, **17,500 times faster**
-than the estimate; with cuBLAS, 30,000 times. `bench/compare.py` takes that
-ratio apart:
+than the estimate; with cuBLAS, 30,000 times. (With the matrix unit and the
+memory options of section 4, Rosenblatt's tiled kernel takes 1,011 cycles,
+40.4 µs, and cuBLAS is still nearly 10,000 times faster.) `bench/compare.py`
+takes the baseline ratio apart:
 
 | | Rosenblatt (baseline RTL at 25 MHz) | RTX 5080 Laptop | Ratio |
 | --- | ---: | ---: | ---: |
@@ -564,8 +667,11 @@ Reading the table:
    limit.
 5. **Specialized units.** cuBLAS uses tensor cores, which multiply small
    matrix tiles per instruction rather than four bytes per lane. That is
-   another 1.7x at this batch size and 2.7x at 100,000 images. It is the same
-   step Rosenblatt took from `mad` to `dp4a`, taken several times further.
+   another 1.7x at this batch size and 2.7x at 100,000 images. It is the step
+   Rosenblatt took from `mad` to `dp4a` and then to `mma`, taken much further:
+   Rosenblatt's matrix unit borrows four 8-bit multipliers per lane and
+   computes one tile row per cycle, while a tensor core is built around
+   multipliers of its own.
 
 None of the five is a trick on its own. More lanes need more bandwidth, more
 on-chip memory and more threads to hide latency, and a library that knows how
@@ -573,7 +679,8 @@ to use all of them. NVIDIA's speed is the product of every layer of the stack
 being built for the others, from the process technology to cuBLAS. Rosenblatt
 needed the same things, in miniature: shared memory and coalescing to feed its
 lanes, warps to hide latency, a memory unit that can keep several loads in
-flight, a domain-specific instruction, and kernels written for all of it.
+flight, a domain-specific instruction, a matrix unit and a pipeline that
+keeps it fed, and kernels written for all of it.
 
 ## 7. What comes next
 
@@ -583,16 +690,21 @@ In order of expected payoff, judged from the measurements above:
    run `python fpga/bringup.py --port COM5` with the matching revision. The
    script loads SRAM, verifies all global memory, and compares every network
    layer with the reference on 20 test images.
-2. **A real matrix instruction.** `dp4ab` computes an 8x8 tile of dot
-   products in eight issue slots. Doing it in one needs several register
-   writes per lane per instruction: a write-back that takes several cycles,
-   or wider register files. That is where tensor cores get their throughput.
+2. **More multipliers and more slots for the matrix unit.** `mma` borrows
+   each lane's four `dp4a` multipliers and computes one tile row per cycle,
+   and the pipelined kernel keeps it 81% busy. Two rows per cycle need eight
+   multipliers per lane; on the 85F, 72% of the DSP blocks are already in
+   use, so the second four would be built from logic. A second slot per warp
+   would let the warps carry work across barriers. That is where tensor cores
+   get their throughput: many multipliers per instruction, kept busy by a
+   pipeline built to feed them.
 3. **More warps per core.** Four warps hide an 8-cycle memory latency but not a
    32-cycle one. Real SMs hold 48-64 warps. The scoreboard lets each warp hide
    some latency itself: with it, halving the warps costs the one-image kernel
    20% instead of 34%.
-4. **The memory options on the board.** 32-byte lines, the scoreboard and an
-   8-instruction queue together cost 11% more logic. They are off in the board
+4. **The memory options and the matrix unit on the board.** 32-byte lines,
+   the scoreboard and an 8-instruction queue together cost 11% more logic,
+   and the matrix unit 10% (it routes at 36.42 MHz). They are off in the board
    build until the plain design has run on real hardware.
 
 ### Tiny Tapeout

@@ -100,6 +100,11 @@ def experiments() -> dict[str, Spec]:
     exp["mma_tiled"] = ({"mma": True}, "tiled", True, TILED_COUNT, "rows", {"mma": True})
     exp["mma_scoreboard_line32_tiled"] = ({"mma": True, "scoreboard": True, "gmem_line_bytes": 32}, "tiled",
                                           True, TILED_COUNT, "interleaved", {"mma": True})
+    # ...which then waits at every stage boundary: double-buffered tiles, with
+    #    the next tile's word stored after the stage's products
+    exp["dbuf_mma_tiled"] = ({"mma": True}, "tiled", True, TILED_COUNT, "rows", {"mma": True, "dbuf": True})
+    exp["dbuf_mma_scoreboard_line32_tiled"] = ({"mma": True, "scoreboard": True, "gmem_line_bytes": 32}, "tiled",
+                                               True, TILED_COUNT, "interleaved", {"mma": True, "dbuf": True})
     return exp
 
 

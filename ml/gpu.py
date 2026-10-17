@@ -206,11 +206,13 @@ class BatchMLP:
     warp's weight loads hit neighbouring words (works with and without DP4A).
     bcast=True uses dp4ab: each lane loads one image's input word and the
     other lanes take it from that lane (needs DP4A and 8-lane warps).
-    dbuf=True (with bcast) keeps two tile buffers in shared memory: each stage
-    fetches the next tile while computing on the current one, with one
-    barrier per stage instead of two.
+    dbuf=True (with bcast or mma) keeps two tile buffers in shared memory:
+    each stage fetches the next tile while computing on the current one, with
+    one barrier per stage instead of two.
     mma=True stages tiles as bcast does and computes each weight word's eight
-    dot products with one mma instruction (needs the matrix unit).
+    dot products with one mma instruction (needs the matrix unit). With dbuf
+    too, the stage loop is written for the unit: it loads a stage ahead and
+    issues each warp's last mma just before the barrier.
 
     With batch=None, reserve the largest multiple of eight that fits the
     remaining device memory. run_batches streams larger inputs through these

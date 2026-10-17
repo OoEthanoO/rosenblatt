@@ -4,8 +4,9 @@ A tiny GPU designed from scratch, and a neural network that runs on it.
 
 - **Hardware**: a SIMT GPU in Verilog: warps of 8 threads in lockstep, 4
   warps per core interleaved to hide memory latency, a divergence stack,
-  banked shared memory, coalescing load/store units, and an int8
-  dot-product instruction (DP4A). The default build has 2 cores x 8 lanes x 4
+  banked shared memory, coalescing load/store units, an int8 dot-product
+  instruction (DP4A), and an optional matrix unit (`mma`: an 8x4 by 4x8 int8
+  tile product per instruction). The default build has 2 cores x 8 lanes x 4
   warps, 256 KiB of global memory and 4 KiB of shared memory per core.
 - **Software**: an instruction set, an assembler, a reference emulator, and a
   Python runtime that drives the emulator, the simulated Verilog, or an FPGA
@@ -115,7 +116,12 @@ and an 8-instruction load queue brings the one-image kernel to 6,057 cycles,
 are off in the board build. A cross-lane dot product, `dp4ab` (one lane's
 operand broadcast to the whole warp, 4% more logic), cuts the tiled kernel's
 instructions by 37%; with the memory options it runs in 1,690 cycles, 1.86x
-faster than the baseline.
+faster than the baseline. A matrix instruction, `mma`, multiplies an 8x4 by a
+4x8 int8 tile, 64 dot products, in one warp instruction. A matrix unit
+computes them beside the pipeline on the lanes' existing multipliers (10% more
+logic, no extra DSPs) and keeps the accumulators outside the register file.
+With the memory options and a stage loop written to keep the unit fed, the
+tiled kernel runs in 1,011 cycles, 3.1x faster than the baseline.
 
 The same network on an RTX 5080 Laptop GPU (`cuda/`), 10,000 images, every
 output score identical to the reference:

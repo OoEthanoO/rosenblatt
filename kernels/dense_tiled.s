@@ -23,6 +23,14 @@
 ; lives in the matrix unit, so r8 keeps the bias, and the epilogue reads the
 ; tile back with mmar.
 ;
+; MMA with DBUF has a stage loop of its own, written for the matrix unit. A
+; warp can have one mma in the unit, so the unit runs dry whenever every warp
+; is busy with something else: at the barrier and the loads that follow it.
+; There, the next tile's word (r9) and the next stage's first weight word
+; (r10) are loaded a stage ahead, the bookkeeping for the next stage is done
+; while the previous mma is computed, and the stage's last mma is issued just
+; before the barrier, so the unit is still working when the warps leave it.
+;
 ; Layouts (bytes): X is B x K (int8 0..127), bias is NPAD int32, Y is B x NPAD
 ; (int8 when REQUANTIZE, else int32). W is NPAD x K int8, either row-major
 ; (INTERLEAVED 0: W[j][k] at j * K + k) or interleaved by words (INTERLEAVED 1:
@@ -51,7 +59,8 @@
 .alias  t,    r6
 .alias  u,    r7
                           ; r8 .. r8+BT-1: accumulators for images b0 .. b0+BT-1
-                          ; (MMA: r8 = bias[j]; the accumulators are the tile)
+                          ; (MMA: r8 = bias[j], the accumulators are the tile; with
+                          ; DBUF, r9 = the next tile's word, r10 = a weight word)
 
         ; ---- which tile: neuron group (low bits of ctaid) and image group
         s2r   t, %ctaid
@@ -105,6 +114,48 @@
         s2r   u, %laneid
         muli  u, u, RS
 .endif
+.if DBUF and MMA
+        ; ---- the stage loop for the matrix unit (needs KC >= 8)
+        ldw   w, [gx]                 ; tile 0
+        sts   [t], w
+        ldw   r9, [gx + KC]           ; tile 1, stored during stage 0
+        addi  gx, gx, 2 * KC
+        ldw   r10, [pw]               ; stage 0's first weight word
+        bar
+mstage:
+.rept   KC / 4, kw
+.if kw == 0
+        lds   x, [u]
+        mma   x, r10                  ; its weights were loaded before the barrier
+.else
+.if INTERLEAVED
+        ldw   w, [pw + kw * 4 * NPAD]
+.else
+        ldw   w, [pw + kw * 4]
+.endif
+        lds   x, [u + kw * 4]
+.if kw == KC / 4 - 1
+        ; the next stage's loads and buffers, while the unit computes the previous mma
+        xori  r11, t, TILEBUF
+        sts   [r11], r9               ; the next tile, into the other buffer
+        ldw   r9, [gx]                ; the tile after it (unused in the last two stages)
+        addi  gx, gx, KC
+.if INTERLEAVED
+        addi  pw, pw, KC * NPAD
+.else
+        addi  pw, pw, KC
+.endif
+        ldw   r10, [pw]               ; the next stage's first weight word
+        xori  t, t, TILEBUF
+        xori  u, u, TILEBUF
+        subi  left, left, 1
+.endif
+        mma   x, w                    ; still computing while the warps pass the barrier
+.endif
+.endr
+        bar                           ; the next tile is complete, and nobody reads the old one
+        bnz   left, mstage
+.else
 .if DBUF
         ; two tile buffers: stage the first tile now; every stage then fetches
         ; the next tile into the other buffer before computing on this one
@@ -177,6 +228,7 @@ stage:  ; ---- 1. the block stages a BT x KC tile of X in shared memory
         bar                           ; nobody overwrites a tile while it is read
         subi  left, left, 1
         bnz   left, stage
+.endif
 
         ; ---- 3. epilogue: Y[b0 + b][j]
         s2r   t, %ctaid

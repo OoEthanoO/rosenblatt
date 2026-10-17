@@ -298,9 +298,9 @@ sources.
 ### Recorded results: 2026-10-12
 
 These results are for the Verilog as of commit `49a2209`. The changes after
-it (word-only store merging, the register scoreboard, `dp4ab`) changed the
-sources, so rebuild before programming a board; `bringup.py` refuses a stale
-image.
+it (word-only store merging, the register scoreboard, `dp4ab`, the matrix
+unit) changed the sources, so rebuild before programming a board;
+`bringup.py` refuses a stale image.
 
 Both 85F builds completed with speed grade 6, `router1`, and placement seed 1:
 
@@ -375,6 +375,16 @@ Lessons from getting here:
 - **DSP blocks run out before logic does.** Each lane needs 3 DSPs for a
   32x32 multiply and 4 for DP4A. The 25F has 28 DSPs, so its 4-lane build
   uses the 16-bit multiplier (1 DSP) and keeps DP4A.
+- **Borrowing hardware costs multiplexers.** The matrix unit
+  (`--param ENABLE_MMA=1`) has no multipliers of its own: on the 85F, 112 of
+  the 156 DSPs are already in use, and another four per lane would not fit.
+  It borrows each lane's DP4A multipliers through a 2-to-1 multiplexer on
+  every multiplier input, and keeps the accumulator tiles and the warps'
+  operand slots in LUT RAM. Synthesis: 39,013 LUTs against 35,432 (10% more),
+  9,294 flip-flops against 8,380, 956 LUT RAM blocks against 440, and the
+  same 112 DSPs. Routed (PCB v3.1.7, `router1`, seed 1), it uses 50,689 of
+  83,640 logic cells (61%) and reaches 36.42 MHz against the 25 MHz required.
+  With the parameter off, the unit leaves nothing behind.
 - **Simulation-only code must stay out of synthesis.** Loops that zero the
   memories at time 0 are fine in a simulator. Yosys unrolls them element by
   element (65,536 iterations for the default global memory) and appeared to
