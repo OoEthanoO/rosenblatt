@@ -36,7 +36,8 @@ module rb_gpu #(
     parameter PARK          = 0,
     parameter GMEM_LINE     = 4,    // bytes per global-memory request: 4, 8, 16 or 32
     parameter SCOREBOARD    = 0,    // 1: a global load stalls only the instructions using its register
-    parameter ENABLE_MMA    = 0     // 1: the matrix unit (mma, mmaz, mmar); needs ENABLE_DP4A
+    parameter ENABLE_MMA    = 0,    // 1: the matrix unit (mma, mmaz, mmar); needs ENABLE_DP4A
+    parameter MMA_SLOTS     = 1     // mma/mmaz per warp in the matrix unit at once (power of two)
 ) (
     input  wire        clk,
     input  wire        rst,
@@ -62,7 +63,7 @@ module rb_gpu #(
                                (SCOREBOARD ? `RB_FEATURE_SCOREBOARD : 8'd0) |
                                (ENABLE_MMA && ENABLE_DP4A ? `RB_FEATURE_MMA : 8'd0);
     localparam [7:0] P_LSUD  = LSU_DEPTH,  P_INTV  = GMEM_INTERVAL, P_PARK = PARK;
-    localparam [7:0] P_LINE  = GMEM_LINE;
+    localparam [7:0] P_LINE  = GMEM_LINE,  P_MSLOT = MMA_SLOTS;
     localparam LWB  = $clog2(GMEM_LINE / 4);   // word-in-line bits
     localparam LWB1 = (LWB > 0) ? LWB : 1;
     localparam LAW  = GMEM_AW - LWB;           // line-address bits
@@ -177,7 +178,7 @@ module rb_gpu #(
             `RB_CSR_ERRORS:    csr_rdata = core_err;
             `RB_CSR_HWCFG0:    csr_rdata = {`RB_HW_VERSION, P_CORES, P_WARPS, P_LANES};
             `RB_CSR_HWCFG1:    csr_rdata = {P_FEAT, P_SMEM, P_GMEM, P_IMEM};
-            `RB_CSR_HWCFG2:    csr_rdata = {8'd0, P_MULW, P_STACK, P_LAT};
+            `RB_CSR_HWCFG2:    csr_rdata = {P_MSLOT, P_MULW, P_STACK, P_LAT};
             `RB_CSR_HWCFG3:    csr_rdata = {P_LINE, P_PARK, P_INTV, P_LSUD};
             default: begin
                 for (k = 0; k < 8; k = k + 1)
@@ -234,7 +235,8 @@ module rb_gpu #(
                 .CORE_ID(gc), .W(NUM_LANES), .NW(NUM_WARPS), .IMEM_AW(IMEM_AW),
                 .GMEM_AW(GMEM_AW), .GMEM_LINE(GMEM_LINE), .SMEM_AW(SMEM_AW), .STACK_DEPTH(STACK_DEPTH),
                 .MUL_WIDTH(MUL_WIDTH), .ENABLE_DP4A(ENABLE_DP4A),
-                .LSU_DEPTH(LSU_DEPTH), .PARK(PARK), .SCOREBOARD(SCOREBOARD), .ENABLE_MMA(ENABLE_MMA)
+                .LSU_DEPTH(LSU_DEPTH), .PARK(PARK), .SCOREBOARD(SCOREBOARD), .ENABLE_MMA(ENABLE_MMA),
+                .MMA_SLOTS(MMA_SLOTS)
             ) u_core (
                 .clk(clk), .rst(rst),
                 .imem_we(imem_we), .imem_waddr(host_addr[IMEM_AW-1:0]), .imem_wdata(host_wdata),

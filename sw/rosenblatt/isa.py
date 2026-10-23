@@ -195,7 +195,7 @@ class CSR(IntEnum):
     ERRORS = 0x12     # per-core sticky error bits
     HWCFG0 = 0x18     # {lanes[7:0], warps[15:8], cores[23:16], version[31:24]}
     HWCFG1 = 0x19     # {imem_aw[7:0], gmem_aw[15:8], smem_aw[23:16], features[31:24]}
-    HWCFG2 = 0x1A     # {gmem_latency[7:0], stack_depth[15:8], mul_width[23:16]}
+    HWCFG2 = 0x1A     # {gmem_latency[7:0], stack_depth[15:8], mul_width[23:16], mma slots[31:24]}  (0: one)
     HWCFG3 = 0x1B     # {lsu_depth[7:0], gmem_interval[15:8], park[23:16], line bytes[31:24]}  (0: not reported)
     PERF_BASE = 0x40  # per-core counters: PERF_BASE + core * PERF_STRIDE + counter
 

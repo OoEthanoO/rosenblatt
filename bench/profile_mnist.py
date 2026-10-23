@@ -105,6 +105,17 @@ def experiments() -> dict[str, Spec]:
     exp["dbuf_mma_tiled"] = ({"mma": True}, "tiled", True, TILED_COUNT, "rows", {"mma": True, "dbuf": True})
     exp["dbuf_mma_scoreboard_line32_tiled"] = ({"mma": True, "scoreboard": True, "gmem_line_bytes": 32}, "tiled",
                                                True, TILED_COUNT, "interleaved", {"mma": True, "dbuf": True})
+    # 13. more slots per warp in the matrix unit: a warp's next mma waits in the
+    #     unit while its previous one computes, and carries work across barriers
+    mem = {"scoreboard": True, "gmem_line_bytes": 32}
+    for slots in (2, 4):
+        exp[f"slots{slots}_dbuf_mma_scoreboard_line32_tiled"] = (
+            {"mma": True, "mma_slots": slots, **mem}, "tiled", True, TILED_COUNT, "interleaved",
+            {"mma": True, "dbuf": True})
+    exp["slots2_mma_scoreboard_line32_tiled"] = ({"mma": True, "mma_slots": 2, **mem}, "tiled", True,
+                                                TILED_COUNT, "interleaved", {"mma": True})
+    exp["slots2_dbuf_mma_tiled"] = ({"mma": True, "mma_slots": 2}, "tiled", True, TILED_COUNT, "rows",
+                                    {"mma": True, "dbuf": True})
     return exp
 
 

@@ -28,7 +28,8 @@ module top #(
     parameter GMEM_LINE     = 4,            // bytes per global-memory request
     parameter SCOREBOARD    = 0,            // 1: loads stall only the instructions that need them
     parameter LSU_DEPTH     = 4,            // global-memory instructions in flight per core
-    parameter ENABLE_MMA    = 0             // 1: the matrix unit (mma, mmaz, mmar)
+    parameter ENABLE_MMA    = 0,            // 1: the matrix unit (mma, mmaz, mmar)
+    parameter MMA_SLOTS     = 1             // mma/mmaz per warp in the matrix unit at once
 ) (
     input  wire       clk_25mhz,
     input  wire [6:0] btn,         // btn[1] = FIRE1 (active high)
@@ -58,6 +59,7 @@ module top #(
         .IMEM_AW(IMEM_AW), .GMEM_AW(GMEM_AW), .SMEM_AW(SMEM_AW),
         .MUL_WIDTH(MUL_WIDTH), .ENABLE_DP4A(ENABLE_DP4A), .GMEM_LATENCY(GMEM_LATENCY),
         .GMEM_LINE(GMEM_LINE), .SCOREBOARD(SCOREBOARD), .LSU_DEPTH(LSU_DEPTH), .ENABLE_MMA(ENABLE_MMA),
+        .MMA_SLOTS(MMA_SLOTS),
         .CLKS_PER_BIT((CLK_HZ + BAUD / 2) / BAUD)
     ) u_gpu (
         .clk(clk), .rst(rst), .uart_rx(ftdi_txd), .uart_tx(ftdi_rxd), .busy(busy),

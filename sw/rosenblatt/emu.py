@@ -46,6 +46,7 @@ class Config:
     gmem_line_bytes: int = 4    # bytes per global-memory load (4, 8, 16 or 32): lanes in one line coalesce; stores coalesce per word
     scoreboard: bool = False    # a global load stalls only instructions that use its register (else the warp); timing only
     mma: bool = False           # matrix unit: mma, mmaz, mmar (needs dp4a)
+    mma_slots: int = 1          # mma/mmaz per warp in the matrix unit at once (a power of two); timing only
 
     @property
     def max_threads(self) -> int:
@@ -70,6 +71,7 @@ class Config:
             "GMEM_LINE": self.gmem_line_bytes,
             "SCOREBOARD": int(self.scoreboard),
             "ENABLE_MMA": int(self.mma),
+            "MMA_SLOTS": self.mma_slots,
         }
 
 

@@ -106,11 +106,13 @@ tensor-core instruction (whose int8 shapes start at m8n8k16), with the
 accumulators kept outside the registers.
 
 `mma` and `mmaz` run asynchronously: they hand their operands to the matrix
-unit, and the warp carries on. Only the warp's next `mma`, `mmaz` or `mmar`
-waits until the unit is done. The results are always those of executing the
-instructions one at a time: overwriting `ra` or `rb` after an `mma` does not
-change it, and `mmar` sees every earlier `mma`. The tiled network kernel
-spends three instructions per weight word:
+unit, and the warp carries on. A further `mma` or `mmaz` waits only while the
+warp's slots in the unit are all taken (one slot by default; `MMA_SLOTS` sets
+the number), and `mmar` waits until the unit has finished them all. The
+results are always those of executing the instructions one at a time:
+overwriting `ra` or `rb` after an `mma` does not change it, and `mmar` sees
+every earlier `mma`. The tiled network kernel spends three instructions per
+weight word:
 
 ```
         ldw   w, [pw]           ; this lane's neuron: four weights

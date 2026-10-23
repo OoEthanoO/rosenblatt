@@ -93,6 +93,7 @@ class BusBackend(Backend):
             scoreboard=bool(c1 >> 24 & isa.FEATURE_SCOREBOARD),
             mma=bool(c1 >> 24 & isa.FEATURE_MMA),
             gmem_latency=c2 & 0xFF, stack_depth=c2 >> 8 & 0xFF, mul_width=c2 >> 16 & 0xFF,
+            mma_slots=(c2 >> 24) or 1,
         )
 
     # ---- memory

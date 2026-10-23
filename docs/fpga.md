@@ -299,8 +299,8 @@ sources.
 
 These results are for the Verilog as of commit `49a2209`. The changes after
 it (word-only store merging, the register scoreboard, `dp4ab`, the matrix
-unit) changed the sources, so rebuild before programming a board;
-`bringup.py` refuses a stale image.
+unit and its slots) changed the sources, so rebuild before programming a
+board; `bringup.py` refuses a stale image.
 
 Both 85F builds completed with speed grade 6, `router1`, and placement seed 1:
 
@@ -385,6 +385,18 @@ Lessons from getting here:
   same 112 DSPs. Routed (PCB v3.1.7, `router1`, seed 1), it uses 50,689 of
   83,640 logic cells (61%) and reaches 36.42 MHz against the 25 MHz required.
   With the parameter off, the unit leaves nothing behind.
+- **A second slot is nearly free.** `--param MMA_SLOTS=2` lets each warp
+  have two operations in the matrix unit. Their operands fit in the 16-word
+  LUT RAM blocks the first slot already uses, so it adds 48 flip-flops, no
+  LUT RAM and no DSPs. Its LUT cost is too small to separate from synthesis
+  noise: Yosys 0.70 maps the one-slot unit to 39,069 LUTs and the two-slot
+  unit to 39,361, but it mapped the previous commit's one-slot unit, the same
+  logic written differently, to 39,476. Routed with the OSS CAD Suite of
+  2026-10-19 (nextpnr 0.11.1-65, PCB v3.1.7, `router1`, seed 1), the two-slot
+  build uses 51,047 of 83,640 logic cells (61%) and reaches 30.58 MHz. Its
+  critical path does not touch the matrix unit: it runs from a register file
+  through the branch logic to the divergence stack, and 72% of it is
+  routing.
 - **Simulation-only code must stay out of synthesis.** Loops that zero the
   memories at time 0 are fine in a simulator. Yosys unrolls them element by
   element (65,536 iterations for the default global memory) and appeared to

@@ -121,7 +121,10 @@ faster than the baseline. A matrix instruction, `mma`, multiplies an 8x4 by a
 computes them beside the pipeline on the lanes' existing multipliers (10% more
 logic, no extra DSPs) and keeps the accumulators outside the register file.
 With the memory options and a stage loop written to keep the unit fed, the
-tiled kernel runs in 1,011 cycles, 3.1x faster than the baseline.
+tiled kernel runs in 1,011 cycles. A second slot per warp in the matrix unit
+(`MMA_SLOTS=2`, under 1% more logic) lets a warp's next `mma` wait in the
+unit instead of in the warp, which keeps the unit working through barriers:
+934 cycles, 3.4x faster than the baseline.
 
 The same network on an RTX 5080 Laptop GPU (`cuda/`), 10,000 images, every
 output score identical to the reference:
@@ -152,7 +155,7 @@ RTL tests need Icarus Verilog (`iverilog`, `vvp`) on `PATH`. The harness also
 finds an OSS CAD Suite installation at `~/tools/oss-cad-suite` or at
 `$OSS_CAD_SUITE`.
 
-Every scenario runs on the emulator and on the Verilog in four hardware
+Every scenario runs on the emulator and on the Verilog in five hardware
 configurations, and outputs *and* performance counters must agree exactly.
 Scenarios: vector addition, naive and tiled matrix multiply, a tree reduction,
 random ALU programs, random nested divergence with loops and early returns,

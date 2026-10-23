@@ -178,6 +178,21 @@ mma: lane b loads image b's input word from shared memory, as with bcast, and on
 | mma_scoreboard_line32_tiled | 1,241 | 1,177 | 356 | 0.47 | 29% | 5% | 469 | 66% | 32/32 |
 | dbuf_mma_scoreboard_line32_tiled | 1,011 | 1,288 | 363 | 0.64 | 36% | 1% | 284 | 81% | 32/32 |
 
+## Matrix-unit slots per warp (tiled)
+
+slotsN: each warp can have N mma operations in the matrix unit at once (default 1), so its next mma waits in the unit instead of in the warp while the previous one computes.
+
+| Experiment | cycles / image | warp instructions / image | global requests / image | IPC per core | memory port busy | issue slots lost to memory waits | replays / image | matrix unit busy | correct |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| mma_tiled | 2,505 | 1,177 | 2,100 | 0.23 | 84% | 24% | 2,393 | 33% | 32/32 |
+| dbuf_mma_tiled | 2,435 | 1,288 | 2,136 | 0.26 | 88% | 20% | 2,459 | 34% | 32/32 |
+| slots2_dbuf_mma_tiled | 2,435 | 1,288 | 2,136 | 0.26 | 88% | 20% | 2,459 | 34% | 32/32 |
+| mma_scoreboard_line32_tiled | 1,241 | 1,177 | 356 | 0.47 | 29% | 5% | 469 | 66% | 32/32 |
+| slots2_mma_scoreboard_line32_tiled | 1,037 | 1,177 | 356 | 0.57 | 34% | 10% | 469 | 79% | 32/32 |
+| dbuf_mma_scoreboard_line32_tiled | 1,011 | 1,288 | 363 | 0.64 | 36% | 1% | 284 | 81% | 32/32 |
+| slots2_dbuf_mma_scoreboard_line32_tiled | 934 | 1,288 | 363 | 0.69 | 39% | 4% | 315 | 88% | 32/32 |
+| slots4_dbuf_mma_scoreboard_line32_tiled | 928 | 1,288 | 363 | 0.69 | 39% | 3% | 335 | 89% | 32/32 |
+
 ## One bottleneck after another (per_image)
 
 Each row adds one change to the row above: 32-byte lines with interleaved weights, the register scoreboard, the loop unrolled by two, an 8-instruction LSU queue.

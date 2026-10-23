@@ -22,6 +22,7 @@ the default build used for simulation has
 | `MUL_WIDTH` | 32 | 16 = only the low 16 bits of each operand are multiplied |
 | `ENABLE_DP4A` | 1 | packed int8 dot-product instruction |
 | `ENABLE_MMA` | 0 | 1 = a matrix unit per core: `mma`, `mmaz`, `mmar` (needs `ENABLE_DP4A`) |
+| `MMA_SLOTS` | 1 | `mma`/`mmaz` operations each warp can have in the matrix unit at once (a power of two; 1, 2 and 4 are tested) |
 
 ```
                        host bus (testbench, or the UART bridge on an FPGA)
@@ -99,9 +100,10 @@ shifters, and the GPU grew by a fifth instead of 4%.
 (row j: lane j's `ra`) by a 4x8 one (column i: lane i's `rb`) into the warp's
 8x8 tile of int32 accumulators (`isa.md`). The tile is not in the register
 file, which has one write port per lane; it sits in a small LUT RAM per lane
-(column i of every warp's tile in lane i). Each warp has a slot in the unit.
-In S2 an `mma` copies all lanes' `ra` and `rb` into its warp's slot and
-leaves the pipeline like an add. The unit takes the slots round robin and
+(column i of every warp's tile in lane i). Each warp has `MMA_SLOTS` slots
+in the unit, used as a ring. In S2 an `mma` copies all lanes' `ra` and `rb`
+into its warp's next free slot and leaves the pipeline like an add. The unit
+takes the warps round robin and each warp's operations in order, and
 computes one row of the tile per cycle: row j's word goes to every lane through
 an 8-to-1 multiplexer, each lane adds its dot product with its own `rb` to
 column entry j, and the sum comes back from the ALU's second stage one cycle
@@ -112,12 +114,15 @@ multipliers and their adder tree in every cycle in which the instruction in
 S2 is not a `dp4a` or `dp4ab` (the ALU's `dot_sel` input), and it also waits
 while an `mmar` in S2 uses the tile's read port. Meanwhile the rest of the
 pipeline keeps issuing: a kernel's loads, address arithmetic and branches run
-on the issue slots and the matrix arithmetic runs beside them. A warp may
-have one operation in the unit: its next `mma`, `mmaz` or `mmar` is dropped
-in S1 and the warp sleeps (`WS_MMA`) until the unit has written the last row.
-That is the whole hazard logic, because the slot holds copies of the
-operands and the tile is only ever read by `mmar`. `HWCFG1`'s feature bits
-report the unit.
+on the issue slots and the matrix arithmetic runs beside them. While all of
+a warp's slots are taken, its next `mma` or `mmaz` is dropped in S1 and the
+warp sleeps (`WS_MMA`) until the unit has written the last row of the oldest
+one; an `mmar` waits until the unit has finished every operation of the
+warp. That is the whole hazard logic, because the slots hold copies of the
+operands, each warp's operations run in order, and the tile is only ever
+read by `mmar`. A slot costs 64 bits per lane, which fit in the LUT RAM the
+first slot already uses. `HWCFG1`'s feature bits report the unit, and the top
+byte of `HWCFG2` its slots per warp.
 
 **Divergence**: a branch evaluates its condition in every active lane. If
 the lanes disagree, the warp continues with the fall-through lanes and pushes
@@ -230,7 +235,7 @@ the RTL tests require both to agree exactly.
   distances (the scoreboard's stress test), random programs around the
   matrix unit (`mma` with loads, `dp4a`s, divergence and barriers), every
   load/store flavour, barriers, and three neural-network paths.
-- `tests/rtl/`: every scenario on the Verilog under four hardware
+- `tests/rtl/`: every scenario on the Verilog under five hardware
   configurations (outputs and event counters must match the emulator exactly),
   the UART bridge at the pin level, and the whole GPU driven through UART.
 - `bench/profile_mnist.py` checks every logit of every image it profiles.

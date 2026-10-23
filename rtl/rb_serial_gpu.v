@@ -8,7 +8,7 @@ module rb_serial_gpu #(
     parameter IMEM_AW = 10, GMEM_AW = 16, SMEM_AW = 10,
     parameter STACK_DEPTH = 8, MUL_WIDTH = 32, ENABLE_DP4A = 1,
     parameter GMEM_LATENCY = 8, GMEM_INTERVAL = 1, LSU_DEPTH = 4, PARK = 0, GMEM_LINE = 4,
-    parameter SCOREBOARD = 0, ENABLE_MMA = 0,
+    parameter SCOREBOARD = 0, ENABLE_MMA = 0, MMA_SLOTS = 1,
     parameter CLKS_PER_BIT = 434, MAX_WORDS = 64,
     parameter RX_TIMEOUT_CYCLES = CLKS_PER_BIT * 12000,
     parameter BUS_TIMEOUT_CYCLES = 1000000
@@ -41,7 +41,7 @@ module rb_serial_gpu #(
         .STACK_DEPTH(STACK_DEPTH), .MUL_WIDTH(MUL_WIDTH), .ENABLE_DP4A(ENABLE_DP4A),
         .GMEM_LATENCY(GMEM_LATENCY), .GMEM_INTERVAL(GMEM_INTERVAL),
         .LSU_DEPTH(LSU_DEPTH), .PARK(PARK), .GMEM_LINE(GMEM_LINE), .SCOREBOARD(SCOREBOARD),
-        .ENABLE_MMA(ENABLE_MMA)
+        .ENABLE_MMA(ENABLE_MMA), .MMA_SLOTS(MMA_SLOTS)
     ) u_gpu (
         .clk(clk), .rst(rst), .host_valid(host_valid), .host_ready(host_ready),
         .host_we(host_we), .host_addr(host_addr), .host_wdata(host_wdata),

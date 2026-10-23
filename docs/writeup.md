@@ -16,9 +16,9 @@ times faster on the same problem.
 | Hardware | SIMT GPU, 2 cores x 8 lanes x 4 warps (parameterized), about 2,200 lines of Verilog |
 | Software | ISA, assembler, emulator, runtime and 6 kernels; about 7,300 lines of Python including tests and tools |
 | Network | 784-64-10 MLP, int8, 97.80% on the MNIST test set (float32: 97.77%) |
-| Verified | every scenario bit-exact against the emulator on 4 hardware configurations; the full network over a simulated UART |
+| Verified | every scenario bit-exact against the emulator on 5 hardware configurations; the full network over a simulated UART |
 | Baseline tiled kernel | 3,139 cycles per digit (32-image batch, 256 KiB RTL simulation, DP4A): 125.6 µs at 25 MHz |
-| Beyond the baseline | optional memory-system upgrades (11% more logic), a cross-lane dot product (4%) and a matrix unit (10%): with kernels written for them, one image 2.9x faster, tiled 3.1x |
+| Beyond the baseline | optional memory-system upgrades (11% more logic), a cross-lane dot product (4%) and a matrix unit (10%, with a second slot per warp under 1% more): with kernels written for them, one image 2.9x faster, tiled 3.4x |
 | FPGA | ULX3S ECP5-85F: the full design occupies 53% of the logic, with 64 KiB global memory and two supported PCB pinouts. Not yet run on a physical board |
 | RTX 5080 | the same network in 4.1 ns per digit (cuBLAS, tensor cores) |
 
@@ -176,10 +176,11 @@ can write one register per cycle. The options:
 Rosenblatt keeps them somewhere else: a small LUT RAM per lane holds that
 lane's column of every warp's tile. NVIDIA's data-center Blackwell GPUs
 likewise keep tensor-core accumulators in a separate tensor memory. An `mma`
-copies its operands from all eight lanes into its warp's slot in the matrix
-unit and then leaves the pipeline like an add. The unit computes one row of
-the tile per cycle; the warp runs on, and only its next matrix instruction
-waits for it.
+copies its operands from all eight lanes into a slot of its warp in the
+matrix unit and then leaves the pipeline like an add. The unit computes one
+row of the tile per cycle; the warp runs on, and its next `mma` waits only
+if the warp's slots are all taken: one by default, two with `MMA_SLOTS=2`
+(section 4).
 
 The unit has no multipliers of its own. It borrows each lane's four `dp4a`
 multipliers in every cycle in which the instruction in the execute stage is
@@ -236,12 +237,13 @@ on both and requires **identical outputs and identical counters**:
 - the network three ways: one image at a time, batched and tiled (with every
   kernel variant, the matrix unit's included), and the full trained model,
   with both weight layouts;
-- four hardware configurations: the default; a 1-core 4-lane build with a
+- five hardware configurations: the default; a 1-core 4-lane build with a
   16-bit multiplier, no DP4A, a one-instruction load/store queue and the
   register scoreboard; a 3-core build with slow memory, 8-byte lines, a
-  two-instruction queue, parked warps and a matrix unit with 4x4 tiles; and
-  the default configuration with 32-byte global-memory lines, the scoreboard
-  and the matrix unit.
+  two-instruction queue, parked warps and a matrix unit with 4x4 tiles and
+  four slots per warp; and the default configuration with 32-byte
+  global-memory lines, the scoreboard and the matrix unit, with one slot per
+  warp and with two.
 
 The UART bridge is tested at the pin level (corrupted frames, glitches, bad
 stop bits, ±1% baud error, stalled buses), and the production Python driver runs
@@ -254,7 +256,7 @@ measures against the NumPy reference.
 Every number in this section comes from cycle-accurate simulation of the
 Verilog (Icarus Verilog) running real MNIST test images, with every output score
 checked against the NumPy reference. `python bench/profile_mnist.py` reruns
-all 53 experiments; full tables are in
+all 57 experiments; full tables are in
 [bench/results/summary.md](../bench/results/summary.md). Unless stated
 otherwise the GPU is the default build: 2 cores x 8 lanes x 4 warps, global
 memory latency 8 cycles, one 32-bit request per cycle.
@@ -499,9 +501,11 @@ per cycle, but beside the pipeline instead of in its issue slots.
 | `dp4ab` | 4-byte lines | 2,648 | 2,590 | |
 | `mma` | 4-byte lines | 2,505 | 1,177 | 33% |
 | `mma`, stage loop for the unit | 4-byte lines | 2,435 | 1,288 | 34% |
+| `mma`, stage loop, two slots per warp | 4-byte lines | 2,435 | 1,288 | 34% |
 | `dp4ab` | 32-byte lines, scoreboard | 1,690 | 2,590 | |
 | `mma` | 32-byte lines, scoreboard | 1,241 | 1,177 | 66% |
-| `mma`, stage loop for the unit | 32-byte lines, scoreboard | **1,011** | 1,288 | 81% |
+| `mma`, stage loop for the unit | 32-byte lines, scoreboard | 1,011 | 1,288 | 81% |
+| `mma`, stage loop, two slots per warp | 32-byte lines, scoreboard | **934** | 1,288 | 88% |
 
 ![tiled kernel by instruction and memory system](img/matrix_unit.png)
 
@@ -529,15 +533,59 @@ previous `mma` computes, and issues the stage's last `mma` just before the
 barrier, so the unit is still busy while the warps pass it. After the barrier a warp needs three
 instructions to hand the unit its next `mma`. The unit is now busy 81% of
 the time, and the kernel takes 1,011 cycles per digit: 1.67x faster than with
-`dp4ab` and 3.1x faster than the baseline tiled kernel. Most of the rest is
-the barrier itself: a warp that arrives early has nothing left in the unit
-until the last warp arrives. A second slot per warp would let it carry work
-across.
+`dp4ab` and 3.1x faster than the baseline tiled kernel.
 
 NVIDIA added asynchronous copies for the same reason (`cp.async` in Ampere,
 the Tensor Memory Accelerator in Hopper). Once tensor cores do the
 arithmetic, the rest of the SM's job is to keep them fed, and the data for
 the next step has to be on its way before it is needed.
+
+### A second slot per warp
+
+Another trace of one core accounts for the unit's idle cycles in the
+pipelined kernel, 19% of the total. Half of them (9.5% of all cycles) fall
+inside the stage loop, around the barriers. A warp's next `mma` waits in the
+warp until its previous one has finished, so when the warps meet at a
+barrier the unit holds at most one operation per warp, 32 cycles of work,
+and a warp that arrives early has nothing left in it. The other half is the
+start and end of every block: 1.4% in the prologues and 7.7% in the
+epilogues, where the warps read their tiles back, requantize them and store
+them.
+
+`MMA_SLOTS=2` gives every warp a ring of two slots in the unit. Its `mma`
+waits only when both are taken, and `mmar` waits until both are done. The
+unit still runs each warp's operations in order, so no result changes, and
+the second slot's operands fit in the LUT RAM the first one already uses.
+
+| Kernel (32-byte lines, scoreboard) | Slots per warp | Cycles per digit | Matrix unit busy |
+| --- | ---: | ---: | ---: |
+| `mma` | 1 | 1,241 | 66% |
+| `mma` | 2 | 1,037 | 79% |
+| `mma`, stage loop for the unit | 1 | 1,011 | 81% |
+| `mma`, stage loop for the unit | 2 | **934** | 88% |
+| `mma`, stage loop for the unit | 4 | 928 | 89% |
+
+Inside the stage loop the unit now idles 118 cycles per hidden-layer block
+instead of 694. The pipelined kernel is 8% faster, 3.36x faster than the
+baseline tiled kernel, and four slots add less than 1% more. The plain `mma`
+kernel gains more than twice as much, 20%: the slot does in hardware part of
+what the stage loop does in software, holding work for the unit while the
+warps do something else. With 4-byte lines the second slot changes nothing (2,435 cycles either
+way). That kernel waits on the memory port, and no warp ever finds its slot
+taken.
+
+What remains is outside the stage loop. In the hidden layer the unit is busy
+in 92% of each block's cycles; the rest is the prologue (77 cycles) and the
+epilogue (319), in which each warp issues about 80 instructions to read back,
+requantize and store its 64 results while the unit has nothing to do. The
+output layer's blocks have only four stages, and their epilogue takes 562 of
+1,301 cycles: its 32-bit stores coalesce only within a word, so each costs
+eight requests, and two thirds of the epilogue's issue slots are stores
+retrying against a full load/store queue. A core runs one block at a time,
+so nothing else can use the unit while a block finishes. NVIDIA's GEMM
+kernels overlap one tile's epilogue with the next tile's products: in
+CUTLASS's "ping-pong" kernels for Hopper, two groups of warps take turns, one
+storing its finished tile while the tensor cores compute the other's.
 
 ## 5. On an FPGA
 
@@ -582,7 +630,9 @@ What the FPGA work taught, in short (details in [fpga.md](fpga.md)):
   tiles and operand slots in LUT RAM. That is 10% more LUTs and 11% more
   flip-flops. Routed for the 85F, the build with the unit uses 61% of the
   logic cells (53% without it) and reaches 36.42 MHz against the 25 MHz
-  required. The unit is off in the board build.
+  required. With two slots per warp it still meets timing, at 30.58 MHz with
+  newer tools; its critical path runs through the branch logic, not the
+  matrix unit. The unit is off in the board build.
 - **Timing pointed at the multiplier.** The first 25F build reached 28.5 MHz:
   register file, DSP multiplier, a long wire, then the adder tree of
   `dp4a`/`mad`, all in one cycle. Splitting the ALU over two pipeline stages
@@ -622,9 +672,10 @@ estimate from the 256 KiB simulation. The physical build has 64 KiB and
 streams eight-image batches, measured separately by
 [`bench/board.py`](fpga.md#benchmark-the-board); serial transfers add host
 time. The RTX 5080 runs the *same algorithm* in 7.2 ns, **17,500 times faster**
-than the estimate; with cuBLAS, 30,000 times. (With the matrix unit and the
-memory options of section 4, Rosenblatt's tiled kernel takes 1,011 cycles,
-40.4 µs, and cuBLAS is still nearly 10,000 times faster.) `bench/compare.py`
+than the estimate; with cuBLAS, 30,000 times. (With the matrix unit, two
+slots per warp and the memory options of section 4, Rosenblatt's tiled kernel
+takes 934 cycles, 37.4 µs, and cuBLAS is still more than 9,000 times
+faster.) `bench/compare.py`
 takes the baseline ratio apart:
 
 | | Rosenblatt (baseline RTL at 25 MHz) | RTX 5080 Laptop | Ratio |
@@ -690,22 +741,28 @@ In order of expected payoff, judged from the measurements above:
    run `python fpga/bringup.py --port COM5` with the matching revision. The
    script loads SRAM, verifies all global memory, and compares every network
    layer with the reference on 20 test images.
-2. **More multipliers and more slots for the matrix unit.** `mma` borrows
-   each lane's four `dp4a` multipliers and computes one tile row per cycle,
-   and the pipelined kernel keeps it 81% busy. Two rows per cycle need eight
-   multipliers per lane; on the 85F, 72% of the DSP blocks are already in
-   use, so the second four would be built from logic. A second slot per warp
-   would let the warps carry work across barriers. That is where tensor cores
-   get their throughput: many multipliers per instruction, kept busy by a
-   pipeline built to feed them.
+2. **More multipliers for the matrix unit, and blocks that overlap.** With
+   two slots per warp the pipelined kernel keeps the unit 88% busy, and the
+   unit's one tile row per cycle is the limit: 822 cycles per digit if it
+   never stopped. Two rows per cycle need eight multipliers per lane; on the
+   85F, 72% of the DSP blocks are already in use, so the second four would be
+   built from logic. That halves the unit's floor, but the kernel's 1,288
+   instructions per digit need 644 issue cycles on each core, so instruction
+   issue would be the next limit. Most of the remaining 12% is block
+   prologues and epilogues, which a core cannot overlap because it runs one
+   block at a time. Two blocks per core, or two accumulator tiles per warp so
+   that a kernel reads one back while the unit fills the other, would hide
+   them. That is where tensor cores get their throughput: many multipliers
+   per instruction, kept busy by a pipeline built to feed them.
 3. **More warps per core.** Four warps hide an 8-cycle memory latency but not a
    32-cycle one. Real SMs hold 48-64 warps. The scoreboard lets each warp hide
    some latency itself: with it, halving the warps costs the one-image kernel
    20% instead of 34%.
 4. **The memory options and the matrix unit on the board.** 32-byte lines,
    the scoreboard and an 8-instruction queue together cost 11% more logic,
-   and the matrix unit 10% (it routes at 36.42 MHz). They are off in the board
-   build until the plain design has run on real hardware.
+   and the matrix unit 10% (with two slots per warp it routes at 30.58 MHz).
+   They are off in the board build until the plain design has run on real
+   hardware.
 
 ### Tiny Tapeout
 

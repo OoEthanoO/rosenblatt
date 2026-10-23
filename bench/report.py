@@ -117,6 +117,13 @@ def main() -> int:
             "loads one stage ahead and each warp's last mma issued just before the barrier. Matrix unit "
             "busy: the share of a core's cycles in which it computed a row.",
             COLS[:-1] + [("mma_busy", "matrix unit busy", ".0%"), COLS[-1]])
+    section("Matrix-unit slots per warp (tiled)",
+            ["mma_tiled", "dbuf_mma_tiled", "slots2_dbuf_mma_tiled", "mma_scoreboard_line32_tiled",
+             "slots2_mma_scoreboard_line32_tiled", "dbuf_mma_scoreboard_line32_tiled",
+             "slots2_dbuf_mma_scoreboard_line32_tiled", "slots4_dbuf_mma_scoreboard_line32_tiled"],
+            "slotsN: each warp can have N mma operations in the matrix unit at once (default 1), so "
+            "its next mma waits in the unit instead of in the warp while the previous one computes.",
+            COLS[:-1] + [("mma_busy", "matrix unit busy", ".0%"), COLS[-1]])
     section("One bottleneck after another (per_image)",
             ["per_image_dp4a", "line32_interleaved_per_image", "scoreboard_line32_per_image",
              "unroll2_scoreboard_line32_per_image", "lsu8_unroll2_scoreboard_line32_per_image"],
@@ -227,16 +234,18 @@ def main() -> int:
         fig.savefig(IMG / "memory_lines.png", dpi=150)
         plt.close(fig)
     # 5. the tiled kernel's dot products: per instruction, and in a unit beside the pipeline
-    groups = [("4-byte lines", ["tiled_dp4a", "bcast_tiled", "mma_tiled", "dbuf_mma_tiled"]),
+    groups = [("4-byte lines", ["tiled_dp4a", "bcast_tiled", "mma_tiled", "dbuf_mma_tiled",
+                                "slots2_dbuf_mma_tiled"]),
               ("32-byte lines + scoreboard", ["scoreboard_line32_tiled", "bcast_scoreboard_line32_tiled",
-                                              "mma_scoreboard_line32_tiled", "dbuf_mma_scoreboard_line32_tiled"])]
+                                              "mma_scoreboard_line32_tiled", "dbuf_mma_scoreboard_line32_tiled",
+                                              "slots2_dbuf_mma_scoreboard_line32_tiled"])]
     if all(k in m for _, ks in groups for k in ks):
-        labels = ["dp4a", "dp4ab", "mma", "mma, pipelined"]
-        colors = [grey, "#93c5fd", blue, "#1e3a8a"]
+        labels = ["dp4a", "dp4ab", "mma", "mma, pipelined", "mma, pipelined, 2 slots"]
+        colors = [grey, "#93c5fd", blue, "#1e3a8a", "#0f172a"]
         fig, ax = plt.subplots(figsize=(8, 3.8))
-        width = 0.2
+        width = 0.17
         for i, (lab, col) in enumerate(zip(labels, colors)):
-            xs = [g + (i - 1.5) * width for g in range(len(groups))]
+            xs = [g + (i - (len(labels) - 1) / 2) * width for g in range(len(groups))]
             vals = [m[ks[i]]["cycles_per_image"] for _, ks in groups]
             bars = ax.bar(xs, vals, width=width, color=col, label=lab)
             ax.bar_label(bars, labels=[f"{v:,.0f}" for v in vals], fontsize=8, padding=2)
