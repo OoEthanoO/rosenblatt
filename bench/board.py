@@ -37,6 +37,7 @@ from ml.qmlp import ARTIFACTS, QuantMLP, preprocess  # noqa: E402
 from rosenblatt.device import Device, EmuBackend  # noqa: E402
 from rosenblatt.emu import Config  # noqa: E402
 from rosenblatt.uart import UartBackend  # noqa: E402
+from fpga.build import source_sha256  # noqa: E402
 
 
 def array_digest(array: np.ndarray) -> str:
@@ -200,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
         "backend": "serial" if a.port else "emulator", "port": a.port,
         "baudrate": a.baudrate if a.port else None,
         "clock_source": "user-specified conversion clock; not measured" if a.port else None,
-        "sources": {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in (
+        "sources": {name: source_sha256(ROOT / name) for name in (
             "bench/board.py", "ml/gpu.py", "ml/qmlp.py", "kernels/dense_int8.s", "kernels/dense_tiled.s",
             "sw/rosenblatt/device.py", "sw/rosenblatt/uart.py", "sw/rosenblatt/emu.py")},
     }

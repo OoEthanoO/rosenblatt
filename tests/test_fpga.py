@@ -74,7 +74,14 @@ def test_build_matches_revision_and_detects_stale_artifacts(fake_build, revision
     with pytest.raises(ValueError, match="checksum"):
         bringup.check_bitstream(bit, revision)
     bit.write_bytes(b"test bitstream")
-    (build.RTL / "rb_gpu.v").write_text("changed")
+    # a checkout with CRLF line endings (Git on Windows) has the same sources
+    source = build.RTL / "rb_gpu.v"
+    lf = source.read_bytes().replace(b"\r\n", b"\n")
+    source.write_bytes(lf.replace(b"\n", b"\r\n"))
+    assert bringup.check_bitstream(bit, revision)["status"] == "ready"
+    source.write_bytes(lf)
+    assert bringup.check_bitstream(bit, revision)["status"] == "ready"
+    source.write_text("changed")
     with pytest.raises(ValueError, match="stale"):
         bringup.check_bitstream(bit, revision)
 

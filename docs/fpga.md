@@ -73,7 +73,10 @@ if the environment is not activated. No tool installation is performed by
 the scripts.
 
 Routing can take a substantial amount of time. The default is `router1`,
-placement seed 1, and speed grade 6. `nextpnr.log` records progress. A build
+placement seed 1, and speed grade 6. `nextpnr.log` records progress. With the
+OSS CAD Suite of 2026-10-19 (nextpnr 0.11.1-65), the PCB v3.1.7 build spent
+1 h 47 min in place and route on a laptop, three times as long as with the
+tools of 2026-10-12, and met timing at 36.08 MHz. A build
 must meet the **25 MHz constraint after routing** before `top.bit` is
 produced. A failed, interrupted, or synthesis-only rebuild invalidates any
 previous `top.bit`. If sources change during a build, it must be rerun.
@@ -88,7 +91,9 @@ python fpga/bringup.py --emulator --images 20
 ```
 
 `--check-build` verifies passing timing, PCB revision, and source/bitstream
-checksums. `report.json` is nextpnr's full report. `summary.json` identifies
+checksums. Source checksums read CRLF line endings as LF, so a Windows
+checkout (where Git usually converts line endings) and a Linux checkout of the
+same commit agree. `report.json` is nextpnr's full report. `summary.json` identifies
 the exact sources that produced the image. Build products remain under the
 ignored `build/` directory; keep a matching summary beside a copied image.
 

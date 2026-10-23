@@ -74,6 +74,13 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def source_sha256(path: Path) -> str:
+    """The checksum of a text source, with CRLF line endings read as LF: Git on
+    Windows usually checks files out with CRLF, and a Windows and a Linux
+    checkout of the same commit must agree."""
+    return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+
+
 def timing_passes(report: dict, required_mhz: float) -> bool:
     clocks = report.get("fmax", {})
     return bool(clocks) and all(
@@ -110,7 +117,7 @@ def build(name: str, synth_only: bool = False, seed: int = 1, router: str = "rou
     revision_lpf = BOARD["lpf"].with_name(f"v{revision}.lpf")
     sources = [RTL / f for f in RTL_FILES] + [RTL / "rb_isa.vh", BOARD["top"],
                 BOARD["lpf"], revision_lpf, ROOT / "fpga" / "build.py"]
-    source_hashes = {p.relative_to(ROOT).as_posix(): sha256(p) for p in sources}
+    source_hashes = {p.relative_to(ROOT).as_posix(): source_sha256(p) for p in sources}
     (out / "pins.lpf").write_text(BOARD["lpf"].read_text() + "\n" + revision_lpf.read_text())
     files = " ".join((RTL / f).relative_to(ROOT).as_posix() for f in RTL_FILES)
     chparam = "".join(f" -set {k} {v}" for k, v in target["params"].items())
@@ -158,7 +165,7 @@ def build(name: str, synth_only: bool = False, seed: int = 1, router: str = "rou
         summary["utilization"] = {k: v for k, v in report.get("utilization", {}).items() if v.get("used")}
         if not summary["timing_passed"]:
             raise RuntimeError("routed design does not meet the 25 MHz timing constraint; no bitstream produced")
-        if source_hashes != {p.relative_to(ROOT).as_posix(): sha256(p) for p in sources}:
+        if source_hashes != {p.relative_to(ROOT).as_posix(): source_sha256(p) for p in sources}:
             raise RuntimeError("sources changed during the build; rebuild before programming")
         run(["ecppack", "--compress", str(out / "top.config"), str(out / "top.bit")], out / "ecppack.log")
         summary["bitstream"] = (out / "top.bit").relative_to(ROOT).as_posix()

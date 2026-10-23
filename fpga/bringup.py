@@ -165,7 +165,7 @@ def check_bitstream(bitstream: Path, revision: str = fpga_build.DEFAULT_REVISION
     if not info.get("sources"):
         raise ValueError("build summary has no source checksums; rebuild")
     changed = [name for name, digest in info["sources"].items()
-               if not (ROOT / name).is_file() or fpga_build.sha256(ROOT / name) != digest]
+               if not (ROOT / name).is_file() or fpga_build.source_sha256(ROOT / name) != digest]
     if changed:
         raise ValueError(f"bitstream is stale; changed sources: {', '.join(changed)}; rebuild")
     return info
