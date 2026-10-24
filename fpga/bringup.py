@@ -1,6 +1,7 @@
 """First contact with a real board: find it, load the GPU, test it layer by layer.
 
     python fpga/bringup.py                    # find the ULX3S, program it, run every check
+    python fpga/bringup.py --board basys3     # the same for a Digilent Basys 3
     python fpga/bringup.py --port COM5 --no-program
     python fpga/bringup.py --list             # show the serial ports this PC sees
     python fpga/bringup.py --doctor           # check software before the board arrives
@@ -35,9 +36,29 @@ from rosenblatt.asm import assemble_file  # noqa: E402
 from rosenblatt.device import BusBackend, Device, EmuBackend  # noqa: E402
 from rosenblatt.emu import Config  # noqa: E402
 from fpga import build as fpga_build  # noqa: E402
+from fpga import vivado_build  # noqa: E402
 
 KERNELS = ROOT / "kernels"
 FTDI_VID, FT231X_PID = 0x0403, 0x6015   # the ULX3S's USB-serial chip
+# What differs between the supported boards; the checks themselves are shared.
+BOARDS = {
+    "ulx3s-85f": {"name": "ULX3S", "usb": (FTDI_VID, FT231X_PID), "chip": "FT231X",
+                  "connector": "the port marked US1", "reset": "FIRE1"},
+    "basys3": {"name": "Basys 3", "usb": (FTDI_VID, 0x6010), "chip": "FT2232H",
+               "connector": "the port marked PROG/UART", "reset": "BTNC", "part": "xc7a35t"},
+}
+
+
+def build_command(board: str, revision: str = fpga_build.DEFAULT_REVISION) -> str:
+    if board == "basys3":
+        return "python fpga/vivado_build.py basys3"
+    return "python fpga/build.py ulx3s-85f --revision " + revision
+
+
+def default_bitstream(board: str, revision: str = fpga_build.DEFAULT_REVISION) -> Path:
+    if board == "basys3":
+        return vivado_build.output_dir("basys3") / "top.bit"
+    return fpga_build.output_dir("ulx3s-85f", revision=revision) / "top.bit"
 
 
 class StepFailed(Exception):
@@ -147,17 +168,21 @@ def show_digit(dev: Device, value: int) -> None:
 # ------------------------------------------------------------- board handling
 
 
-def check_bitstream(bitstream: Path, revision: str = fpga_build.DEFAULT_REVISION) -> dict:
-    """Accept only a completed build of these sources for the selected PCB."""
+def check_bitstream(bitstream: Path, revision: str = fpga_build.DEFAULT_REVISION,
+                    board: str = "ulx3s-85f") -> dict:
+    """Accept only a completed build of these sources for the selected board (and PCB)."""
     if not bitstream.exists():
-        raise FileNotFoundError(f"{bitstream} not found: build it with python fpga/build.py ulx3s-85f")
+        raise FileNotFoundError(f"{bitstream} not found: build it with {build_command(board, revision)}")
     manifest = bitstream.with_name("summary.json")
     if not manifest.is_file():
         raise ValueError("build summary.json is missing; rebuild the bitstream")
     info = json.loads(manifest.read_text())
     if info.get("status") != "ready" or info.get("timing_passed") is not True:
         raise ValueError("build did not complete with passing timing; rebuild before programming")
-    if info.get("target") != "ulx3s-85f" or info.get("pcb_revision") != revision:
+    if board == "basys3":
+        if info.get("target") != "basys3":
+            raise ValueError(f"bitstream is for {info.get('target')}, expected basys3")
+    elif info.get("target") != "ulx3s-85f" or info.get("pcb_revision") != revision:
         raise ValueError(f"bitstream is for {info.get('target')} PCB {info.get('pcb_revision')}, "
                          f"expected ulx3s-85f PCB {revision}")
     if info.get("bitstream_sha256") != fpga_build.sha256(bitstream):
@@ -171,15 +196,19 @@ def check_bitstream(bitstream: Path, revision: str = fpga_build.DEFAULT_REVISION
     return info
 
 
-def select_port(ports, requested: str | None = None):
+def select_port(ports, requested: str | None = None, board: str = "ulx3s-85f"):
     if requested:
         matches = [p for p in ports if p.device.casefold() == requested.casefold()]
         if not matches:
             raise RuntimeError(f"serial port {requested} was not found; use --list")
     else:
-        matches = [p for p in ports if (p.vid, p.pid) == (FTDI_VID, FT231X_PID)]
+        b = BOARDS[board]
+        matches = [p for p in ports if (p.vid, p.pid) == b["usb"]]
         if not matches:
-            raise RuntimeError("no FT231X USB-serial device found")
+            raise RuntimeError(f"no {b['chip']} USB-serial device found")
+        if board == "basys3" and len(matches) > 1:
+            # Linux lists both FTDI channels; the serial port is the second (interface 1)
+            matches = [p for p in matches if (p.location or "").endswith(".1")] or matches
     if len(matches) != 1:
         raise RuntimeError(f"several found ({', '.join(p.device for p in matches)}): pass --port")
     return matches[0]
@@ -197,8 +226,11 @@ def run_programmer(args: list[str], *, timeout: float | None = None) -> str:
     return (p.stdout + p.stderr).strip()
 
 
-def program(bitstream: Path, serial_number: str | None = None) -> None:
+def program(bitstream: Path, serial_number: str | None = None, board: str = "ulx3s-85f") -> None:
     """Load volatile FPGA SRAM; do not overwrite the factory flash image."""
+    if board == "basys3":
+        vivado_build.program(bitstream, BOARDS[board]["part"], serial_number)
+        return
     if os.name == "nt":
         args = ["-S", serial_number] if serial_number else []
     else:
@@ -206,23 +238,32 @@ def program(bitstream: Path, serial_number: str | None = None) -> None:
     run_programmer([*args, str(bitstream)])
 
 
-def doctor(bitstream: Path, revision: str) -> int:
+def doctor(bitstream: Path, revision: str, board: str = "ulx3s-85f") -> int:
     """Report every software prerequisite without opening USB or serial devices."""
     def build_tools():
         fpga_build.find_tools()
         return "yosys, nextpnr-ecp5, ecppack found"
 
+    def vivado():
+        version = subprocess.run([vivado_build.find_vivado(), "-version"],
+                                 capture_output=True, text=True, timeout=120)
+        return (version.stdout + version.stderr).strip().splitlines()[0]
+
     def serial_library():
         import serial
         return f"pyserial {serial.VERSION}"
 
+    if board == "basys3":
+        tools = [("Vivado (build and programmer)", "install Vivado; see docs/fpga.md", vivado)]
+    else:
+        tools = [("build tools", "install the OSS CAD Suite; see docs/fpga.md", build_tools),
+                 ("programmer", "install the FTDI CDM/D2XX driver on Windows; see docs/fpga.md",
+                  lambda: run_programmer(["-V"], timeout=10).splitlines()[0])]
     checks = [
-        ("build tools", "install the OSS CAD Suite; see docs/fpga.md", build_tools),
-        ("programmer", "install the FTDI CDM/D2XX driver on Windows; see docs/fpga.md",
-         lambda: run_programmer(["-V"], timeout=10).splitlines()[0]),
+        *tools,
         ("serial library", 'python -m pip install -e ".[fpga]"', serial_library),
-        ("build", "python fpga/build.py ulx3s-85f --revision " + revision,
-         lambda: str(check_bitstream(bitstream, revision)["bitstream"])),
+        ("build", build_command(board, revision),
+         lambda: str(check_bitstream(bitstream, revision, board)["bitstream"])),
     ]
     failed = False
     for name, hint, check in checks:
@@ -231,17 +272,19 @@ def doctor(bitstream: Path, revision: str) -> int:
         except StepFailed:
             failed = True
     if not failed:
-        print("software checks passed; connect the board to US1 to run the hardware checks")
+        print(f"software checks passed; connect the board to {BOARDS[board]['connector']} "
+              "to run the hardware checks")
     return int(failed)
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--port", help="serial port (default: the only ULX3S found)")
+    ap.add_argument("--board", choices=list(BOARDS), default="ulx3s-85f")
+    ap.add_argument("--port", help="serial port (default: the only board of that kind found)")
     ap.add_argument("--baudrate", type=int, default=115200)
-    ap.add_argument("--bitstream", type=Path, help="default: the 85F build for --revision")
+    ap.add_argument("--bitstream", type=Path, help="default: the board's build (for --revision on a ULX3S)")
     ap.add_argument("--revision", choices=fpga_build.REVISIONS, default=fpga_build.DEFAULT_REVISION,
-                    help="PCB 3.1.7 (also 3.1.6), or 3.0 (also v2.x)")
+                    help="ULX3S PCB 3.1.7 (also 3.1.6), or 3.0 (also v2.x)")
     ap.add_argument("--check-build", action="store_true", help="verify the bitstream without connecting a board")
     ap.add_argument("--doctor", action="store_true", help="check tools, programmer, Python and bitstream without a board")
     ap.add_argument("--no-program", action="store_true", help="the board is already programmed")
@@ -251,15 +294,16 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     if a.images < 0 or a.images > 10000 or a.baudrate <= 0:
         ap.error("--images must be 0..10000 and --baudrate must be positive")
-    bitstream = a.bitstream or fpga_build.output_dir("ulx3s-85f", revision=a.revision) / "top.bit"
+    board = BOARDS[a.board]
+    bitstream = a.bitstream or default_bitstream(a.board, a.revision)
+    rebuild = "rebuild with " + build_command(a.board, a.revision)
 
     if a.doctor:
-        return doctor(bitstream, a.revision)
+        return doctor(bitstream, a.revision, a.board)
 
     if a.check_build:
         try:
-            step("build", "rebuild with python fpga/build.py ulx3s-85f --revision " + a.revision)(
-                lambda: str(check_bitstream(bitstream, a.revision)["bitstream"]))
+            step("build", rebuild)(lambda: str(check_bitstream(bitstream, a.revision, a.board)["bitstream"]))
         except StepFailed:
             return 1
         return 0
@@ -280,10 +324,10 @@ def main(argv: list[str] | None = None) -> int:
     if a.list:
         ports = list(list_ports.comports())
         for p in ports:
-            tag = "  <- ULX3S" if (p.vid, p.pid) == (FTDI_VID, FT231X_PID) else ""
+            tag = "".join(f"  <- {b['name']}" for b in BOARDS.values() if (p.vid, p.pid) == b["usb"])
             print(f"{p.device:12s} {p.description}{tag}")
         if not ports:
-            print("No serial ports found. Connect the board to US1 with a USB data cable.")
+            print(f"No serial ports found. Connect the board to {board['connector']} with a USB data cable.")
         return 0
 
     try:
@@ -292,27 +336,34 @@ def main(argv: list[str] | None = None) -> int:
 
         def usb():
             nonlocal port
-            port = select_port(ports, a.port)
+            port = select_port(ports, a.port, a.board)
             if not a.no_program:
-                if (port.vid, port.pid) != (FTDI_VID, FT231X_PID):
-                    raise RuntimeError("selected port is not an FT231X; use --no-program for a custom serial link")
-                found = [p for p in ports if (p.vid, p.pid) == (FTDI_VID, FT231X_PID)]
+                if (port.vid, port.pid) != board["usb"]:
+                    raise RuntimeError(f"selected port is not an {board['chip']}; "
+                                       "use --no-program for a custom serial link")
+                found = [p for p in ports if (p.vid, p.pid) == board["usb"]]
+                if a.board == "basys3":   # one board can list two FTDI channels
+                    found = [p for p in found if p.serial_number != port.serial_number] + [port]
                 if len(found) > 1 and (not port.serial_number or
                         sum(p.serial_number == port.serial_number for p in found) != 1):
                     raise RuntimeError("boards do not have unique USB serial numbers; connect only the intended board")
             return f"using {port.device} ({port.serial_number or 'no USB serial number'})"
-        step("USB connection", "use a data cable (not charge-only) on the port marked US1; on Windows the FTDI "
-             "driver installs from Windows Update; try `python fpga/bringup.py --list`")(usb)
+        step("USB connection", f"use a data cable (not charge-only) on {board['connector']}; on Windows the "
+             "FTDI driver installs from Windows Update; try `python fpga/bringup.py --list`")(usb)
 
         if not a.no_program:
             def verify_build():
-                info = check_bitstream(bitstream, a.revision)
+                info = check_bitstream(bitstream, a.revision, a.board)
                 if info["params"]["BAUD"] != a.baudrate:
                     raise ValueError("--baudrate differs from the bitstream; use " + str(info["params"]["BAUD"]))
-                return f"85F PCB {a.revision}, timing passed, source and bitstream checksums match"
-            step("build", "rebuild with python fpga/build.py ulx3s-85f --revision " + a.revision)(verify_build)
-            step("load the bitstream", "on Windows fujprog needs the standard FTDI driver; close other programs "
-                 "using the port; check that the board is an 85F")(lambda: program(bitstream, port.serial_number))
+                which = "Basys 3" if a.board == "basys3" else f"85F PCB {a.revision}"
+                return f"{which}, timing passed, source and bitstream checksums match"
+            step("build", rebuild)(verify_build)
+            load_hint = ("Vivado's hardware manager needs its cable drivers (part of the Vivado install); "
+                         "check that the board is switched on" if a.board == "basys3" else
+                         "on Windows fujprog needs the standard FTDI driver; close other programs "
+                         "using the port; check that the board is an 85F")
+            step("load the bitstream", load_hint)(lambda: program(bitstream, port.serial_number, a.board))
             time.sleep(1.0)
 
         from rosenblatt.uart import UartBackend
@@ -321,8 +372,8 @@ def main(argv: list[str] | None = None) -> int:
         def connect():
             holder["backend"] = UartBackend(port.device, baudrate=a.baudrate)
             return f"serial protocol v1, bursts of {holder['backend'].max_words} words"
-        step("serial link", "press FIRE1 to reset the GPU and retry; the baud rate must match the bitstream "
-             "(115200 unless you changed top.v)")(connect)
+        step("serial link", f"press {board['reset']} to reset the GPU and retry; the baud rate must match "
+             "the bitstream (115200 unless you changed top.v)")(connect)
         with holder["backend"] as backend:
             selftest(Device(backend), images=a.images)
     except StepFailed:

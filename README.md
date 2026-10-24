@@ -17,7 +17,9 @@ A tiny GPU designed from scratch, and a neural network that runs on it.
 - **FPGA**: targets the ULX3S ECP5-85F at 25 MHz, with 64 KiB of internal
   global memory and a UART connection to the PC. The build checks routed
   timing and records source/bitstream checksums. Both common PCB pinouts
-  are supported; physical-board testing is still pending.
+  are supported. A Digilent Basys 3 (AMD Artix-7 35T, built with Vivado)
+  holds one core of the same design. Physical-board testing is still
+  pending.
 - **Profiling and comparison**: a cycle-accurate profiling study of the
   network on the GPU, and the same network on an NVIDIA RTX 5080 for
   comparison.

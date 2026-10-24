@@ -1,7 +1,7 @@
 """Draw a digit with the mouse; the GPU recognizes it.
 
     python -m ml.draw                 # on the emulator
-    python -m ml.draw --port COM5     # on the ULX3S (the LEDs show the answer too)
+    python -m ml.draw --port COM5     # on an FPGA board (its LEDs show the answer too)
 
 Left mouse button draws, the right button (or Clear) wipes the canvas. When the
 mouse is released, the drawing is turned into a 28x28 image the way MNIST's
@@ -101,7 +101,7 @@ def checked_inference(gpu, model, image: np.ndarray):
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--port", help="serial port of the ULX3S (default: the emulator)")
+    ap.add_argument("--port", help="serial port of the FPGA board (default: the emulator)")
     ap.add_argument("--baudrate", type=int, default=115200)
     ap.add_argument("--selftest", action="store_true", help=argparse.SUPPRESS)  # hidden window, for tests
     a = ap.parse_args(argv)
@@ -125,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
     with connection as backend:
         dev = Device(backend)
         gpu = GpuMLP(dev, model)
-        where = f"ULX3S on {a.port}" if a.port else "emulator"
+        where = f"FPGA on {a.port}" if a.port else "emulator"
 
         root = tk.Tk()
         root.title("Rosenblatt: draw a digit")
@@ -188,7 +188,8 @@ def main(argv: list[str] | None = None) -> int:
                 digit.config(text="!", fg="#ef4444")
                 bars.delete("all")
                 seen.delete("all")
-                recovery = "Press FIRE1 and restart this demo." if a.port else "Restart this demo."
+                recovery = ("Reset the board (FIRE1 on a ULX3S, BTNC on a Basys 3) and restart this demo."
+                            if a.port else "Restart this demo.")
                 status.config(text=f"GPU: {where}\n{exc}\n{recovery}", fg="#ef4444")
                 return
             pred = res.prediction

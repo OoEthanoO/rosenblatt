@@ -33,7 +33,9 @@ only 72 KB of block RAM in total, which is not enough for that plus the
 register files and shared memory.
 
 The 25F and 45F configurations are retained for experiments; the validation
-below is for the 85F. Do not reuse earlier timing figures after changing RTL.
+below is for the 85F. A second board, the Digilent Basys 3 with an AMD
+Artix-7, holds one core and is built with Vivado; see
+[its section](#digilent-basys-3). Do not reuse earlier timing figures after changing RTL.
 The completed build's `summary.json` records final routed timing, resource
 use, tool versions, source checksums, and the bitstream checksum.
 
@@ -333,6 +335,55 @@ The [validation record](../fpga/validation/ulx3s-85f.json) contains the exact
 source checksums, tool versions, bitstream checksums and test results. These
 are simulation and software-tool results; physical-board testing is pending.
 
+## Digilent Basys 3
+
+The [Basys 3](https://digilent.com/reference/programmable-logic/basys-3/start)
+carries an AMD Artix-7 XC7A35T, a 100 MHz oscillator, 16 LEDs, a four-digit
+display and an FTDI FT2232H that provides JTAG and a USB serial port on its
+one micro-USB connector, marked PROG/UART. The 35T holds one core of the
+default design (8 lanes x 4 warps), so every kernel runs as in simulation, on
+half the cores. By Yosys's count that core needs about 17,000 of the chip's
+20,800 LUTs, 56 of 90 DSP slices and 17 of 50 block RAMs; Vivado's own
+synthesis usually needs fewer LUTs. `fpga/basys3/top.v` makes the 25 MHz GPU
+clock from the oscillator with an MMCM, and `fpga/basys3/basys3.xdc` takes its
+pins from Digilent's master constraints file.
+
+The open-source tools in the OSS CAD Suite cannot place and route an
+Artix-7, so this board is built with AMD's Vivado. Install the free Standard
+edition from AMD (it needs an AMD account). In the installer, select only the
+Artix-7 devices to keep the download small, and keep the cable drivers
+selected: Vivado's hardware manager programs the board through them. Then:
+
+```bash
+python fpga/vivado_build.py basys3                 # build/fpga/basys3/top.bit and summary.json
+python fpga/bringup.py --board basys3 --doctor     # Vivado, pyserial and the bitstream
+python fpga/bringup.py --board basys3              # program over JTAG, then every check
+```
+
+`vivado_build.py` finds Vivado on `PATH`, in the default install folders or
+at `$VIVADO`, and writes no bitstream unless the routed design meets timing.
+Its `summary.json` has the same fields as the ULX3S build's, so the bring-up
+script checks it the same way. The script loads the FPGA's configuration
+memory, not the board's flash: switch the board off and it starts its own
+image again. The demo and the benchmark work as on the ULX3S, with `--port`
+naming the board's serial port.
+
+| LED or display | Meaning |
+| --- | --- |
+| LED 0 | kernel running |
+| LED 1, 2 | serial data from, to the PC |
+| LED 3-6 | the 4-bit value the PC writes (the demo's recognized digit) |
+| LED 15 | heartbeat, about 1.5 Hz |
+| rightmost digit | the same value, as a hex digit; a dash until a kernel has run |
+| BTNC (centre button) | reset the GPU, also after a serial protocol error |
+
+The Basys 3 build has not yet been run through Vivado or tested on a board.
+Its top level is simulated like the ULX3S wrapper (`tests/rtl/test_basys3.py`):
+the 25 MHz clock, startup, physical 115,200-baud serial timing, the LEDs and
+the display, the full network through the serial pins, and reset recovery.
+The Vivado flow and the bring-up script's board handling are tested with a
+stand-in for Vivado (`tests/test_vivado.py`).
+
 ## Another board
 
 `fpga/ulx3s/top.v` contains a synchronized button/power-on reset, the GPU with its UART
@@ -343,6 +394,8 @@ file and the clock frequency in `top.v`, and add a target in
 `nextpnr-ice40` instead. The iCE40 UP5K (5,280 LUTs) is too small for even
 the 4-lane configuration (13,872 logic cells on the ECP5); an iCE40 build
 would need something like 2 lanes and a much smaller shared-memory crossbar.
+For another AMD board, start from `fpga/basys3/` and add a target to
+`fpga/vivado_build.py`.
 
 ## What takes the space
 

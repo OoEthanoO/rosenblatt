@@ -1,4 +1,4 @@
-"""Compare single-image and tiled inference on an already programmed ULX3S.
+"""Compare single-image and tiled inference on an already programmed board.
 
     python bench/board.py --port COM5 --count 32
     python bench/board.py --count 32       # emulator: correctness and event counts only
@@ -254,7 +254,8 @@ def main(argv: list[str] | None = None) -> int:
         save_report(a.output, report)
         print(f"Report: {a.output.resolve()}", flush=True)
     if code and a.port:
-        print("Press FIRE1 and restart the benchmark before using this serial connection again.")
+        print("Reset the board (FIRE1 on a ULX3S, BTNC on a Basys 3) and restart the benchmark "
+              "before using this serial connection again.")
     return code
 
 
