@@ -1,5 +1,5 @@
 {
-  "recorded_utc": "2026-10-12T18:56:13.331089+00:00",
+  "recorded_utc": "2026-10-24T01:07:04.320914+00:00",
   "board": "ULX3S ECP5-85F (LFE5U-85F-6BG381C)",
   "physical_board_tested": false,
   "builds": {
@@ -22,49 +22,53 @@
         "MUL_WIDTH": 32,
         "ENABLE_DP4A": 1,
         "GMEM_LATENCY": 8,
-        "GMEM_LINE": 4
+        "GMEM_LINE": 4,
+        "SCOREBOARD": 0,
+        "LSU_DEPTH": 4,
+        "ENABLE_MMA": 0,
+        "MMA_SLOTS": 1
       },
       "seed": 1,
       "router": "router1",
       "sources": {
-        "rtl/rb_gpu.v": "d814b36df68fe5d0f6ad2ab50384298a2f270a35ea40b9de54a851d375f52eab",
-        "rtl/rb_core.v": "2d2f0e3da01fc730c856d1c93735a887e0455cd1475b885071f824f662bbad56",
-        "rtl/rb_lsu.v": "e65f36bb9745086f61e26f8ebe6a6dcf00664513ef2147247dc7d1b2a27327f1",
-        "rtl/rb_smem.v": "23e74b1fa46de687ab82c1fef83bc2b6ce8b1ac620848ffc3092797e4fb01917",
-        "rtl/rb_alu.v": "7bf127b49d6c5f0213eedf8b5f41a5b37a961ad98d0667f47b5c80d09ee4308a",
-        "rtl/rb_regfile.v": "c05e9ee7346eb9cafb9cbb682e3f51e23b773505379500d809efa7fa7f1bda3e",
+        "rtl/rb_gpu.v": "47b3b119671a63cb9bc3df444a692338f8301e6096c68387c14b8942489c6e5d",
+        "rtl/rb_core.v": "4f7563128d3b709e4aaac5ac2eebd67c5c635119a94b3fb61476695e1871930c",
+        "rtl/rb_lsu.v": "0a1316cc954e3e6052f5e17b1630aaf2ac9a4e16742c3a5ba6ad36d955ee878a",
+        "rtl/rb_smem.v": "856efe4dbc2d837739b684d68002ed5f5374a178b723267df7e864cc8f096742",
+        "rtl/rb_alu.v": "410741cb65f0315298dfaca90bd775b6624d066d475b9fed3b10f45208965e02",
+        "rtl/rb_regfile.v": "e74ab4a9f031c1cadf0160df9057c73e329cbd2c3f900fbeb568fee25e91b5da",
         "rtl/rb_gmem.v": "dc285b1b6d05eb996a1f904d6febd599c0b080fd991315be9fdc595b69d3d175",
         "rtl/rb_uart_rx.v": "c50eb9b4c2887f819cb3516bb7d603aacf05acab7abfd0b04b2411d40a12bf30",
         "rtl/rb_uart_tx.v": "fe0209116768cecdd9a653b87ec6d367b0755716a3badb6fff5a1382917a80e9",
-        "rtl/rb_uart_bridge.v": "4b7399f9cbbd70a464c5997f0650ee69861e90d70d7e8029d3243da775c9a249",
-        "rtl/rb_serial_gpu.v": "8ea8a54800b1221bb0e1b989f9f754a62597dcdaf2035720708e4a942d1f84e5",
-        "rtl/rb_isa.vh": "4fe5bea858349ee9c85160a43574f0dd7eb08f28054240a7a20b0cbb82f3e822",
-        "fpga/ulx3s/top.v": "5a7b6131c0400f4bc9f7812bd4606cb6264f7c711f1e6d071594c820ce538693",
-        "fpga/ulx3s/ulx3s.lpf": "71ef2a2e0d7f9de4174e7da2e82bb22d4e5e726db0b78234dfbeb4f09dcfb629",
+        "rtl/rb_uart_bridge.v": "34d349997e4cbafb8ed2cb4682db48876819e1306aad35ee3cd15fa6ffceb4b2",
+        "rtl/rb_serial_gpu.v": "bc53d3dd6b0d5ef36c08bb25137562de2c29e8346b16169be2e1f07b241cec8d",
+        "rtl/rb_isa.vh": "71445bfd4e37cf06bb1496a930a0edaf54098eacb0edd14e2510c678680fa697",
+        "fpga/ulx3s/top.v": "f37744b1a521b8d4d4eb7613ae5f00cdd31f5acd9193850ed385500998da7850",
+        "fpga/ulx3s/ulx3s.lpf": "eb0caa492bfa55c866a181d6448811a1f0d2719983cd68234c58270ec471511a",
         "fpga/ulx3s/v3.0.lpf": "3abae962e938c74b8bdf5298123fd8848733a130a93f8e65de8fda4fccc96f73",
-        "fpga/build.py": "f627884282ba75893ef34c089c77b61a7e8dba1011b7e1b76b333256bc68c793"
+        "fpga/build.py": "91a287e9b575768e5f015419f61802f05e90e2922530716fc9a93713079674b9"
       },
-      "started_utc": "2026-10-12T18:18:30.982017+00:00",
+      "started_utc": "2026-10-23T14:30:58.346782+00:00",
       "status": "ready",
       "tools": {
-        "yosys": "Yosys 0.69+274 (git sha1 7513f8df8, Release, GNU /usr/bin/x86_64-w64-mingw32-g++ 15.2.1)",
-        "nextpnr-ecp5": "\"nextpnr-ecp5\" -- Next Generation Place and Route (Version nextpnr-0.11.1-54-g861c57be)"
+        "yosys": "Yosys 0.70+157 (git sha1 af9f71e51, Release, GNU /usr/bin/x86_64-w64-mingw32-g++ 15.2.1)",
+        "nextpnr-ecp5": "\"nextpnr-ecp5\" -- Next Generation Place and Route (Version nextpnr-0.11.1-65-ge677d5c3)"
       },
-      "synth_seconds": 60.4,
+      "synth_seconds": 59.4,
       "cells": {
-        "CCU2C": 2473,
+        "CCU2C": 2472,
         "DP16KD": 100,
-        "L6MUX21": 651,
-        "LUT4": 35910,
+        "L6MUX21": 299,
+        "LUT4": 35683,
         "MULT18X18D": 112,
-        "PFUMX": 5171,
+        "PFUMX": 4777,
         "TRELLIS_DPR16X4": 440,
-        "TRELLIS_FF": 8366
+        "TRELLIS_FF": 8380
       },
-      "pnr_seconds": 2175.0,
+      "pnr_seconds": 6216.9,
       "timing_passed": true,
       "fmax_mhz": {
-        "$glbnet$clk_25mhz$TRELLIS_IO_IN": 37.02
+        "$glbnet$clk_25mhz$TRELLIS_IO_IN": 35.36
       },
       "utilization": {
         "DCCA": {
@@ -81,11 +85,11 @@
         },
         "TRELLIS_COMB": {
           "available": 83640,
-          "used": 44382
+          "used": 44149
         },
         "TRELLIS_FF": {
           "available": 83640,
-          "used": 8366
+          "used": 8380
         },
         "TRELLIS_IO": {
           "available": 365,
@@ -97,8 +101,8 @@
         }
       },
       "bitstream": "build/fpga/ulx3s-85f+pcb3.0/top.bit",
-      "bitstream_sha256": "2f5277038444643102fae7d1a45b9b5693149377d69a7c8225a8102301de7a4f",
-      "finished_utc": "2026-10-12T18:55:47.545726+00:00"
+      "bitstream_sha256": "51b58f7918a8d6fd12407223d9370d0338e349acb5a504edf6299db1ef0e108a",
+      "finished_utc": "2026-10-23T16:15:36.311489+00:00"
     },
     "3.1.7": {
       "target": "ulx3s-85f",
@@ -119,49 +123,53 @@
         "MUL_WIDTH": 32,
         "ENABLE_DP4A": 1,
         "GMEM_LATENCY": 8,
-        "GMEM_LINE": 4
+        "GMEM_LINE": 4,
+        "SCOREBOARD": 0,
+        "LSU_DEPTH": 4,
+        "ENABLE_MMA": 0,
+        "MMA_SLOTS": 1
       },
       "seed": 1,
       "router": "router1",
       "sources": {
-        "rtl/rb_gpu.v": "d814b36df68fe5d0f6ad2ab50384298a2f270a35ea40b9de54a851d375f52eab",
-        "rtl/rb_core.v": "2d2f0e3da01fc730c856d1c93735a887e0455cd1475b885071f824f662bbad56",
-        "rtl/rb_lsu.v": "e65f36bb9745086f61e26f8ebe6a6dcf00664513ef2147247dc7d1b2a27327f1",
-        "rtl/rb_smem.v": "23e74b1fa46de687ab82c1fef83bc2b6ce8b1ac620848ffc3092797e4fb01917",
-        "rtl/rb_alu.v": "7bf127b49d6c5f0213eedf8b5f41a5b37a961ad98d0667f47b5c80d09ee4308a",
-        "rtl/rb_regfile.v": "c05e9ee7346eb9cafb9cbb682e3f51e23b773505379500d809efa7fa7f1bda3e",
+        "rtl/rb_gpu.v": "47b3b119671a63cb9bc3df444a692338f8301e6096c68387c14b8942489c6e5d",
+        "rtl/rb_core.v": "4f7563128d3b709e4aaac5ac2eebd67c5c635119a94b3fb61476695e1871930c",
+        "rtl/rb_lsu.v": "0a1316cc954e3e6052f5e17b1630aaf2ac9a4e16742c3a5ba6ad36d955ee878a",
+        "rtl/rb_smem.v": "856efe4dbc2d837739b684d68002ed5f5374a178b723267df7e864cc8f096742",
+        "rtl/rb_alu.v": "410741cb65f0315298dfaca90bd775b6624d066d475b9fed3b10f45208965e02",
+        "rtl/rb_regfile.v": "e74ab4a9f031c1cadf0160df9057c73e329cbd2c3f900fbeb568fee25e91b5da",
         "rtl/rb_gmem.v": "dc285b1b6d05eb996a1f904d6febd599c0b080fd991315be9fdc595b69d3d175",
         "rtl/rb_uart_rx.v": "c50eb9b4c2887f819cb3516bb7d603aacf05acab7abfd0b04b2411d40a12bf30",
         "rtl/rb_uart_tx.v": "fe0209116768cecdd9a653b87ec6d367b0755716a3badb6fff5a1382917a80e9",
-        "rtl/rb_uart_bridge.v": "4b7399f9cbbd70a464c5997f0650ee69861e90d70d7e8029d3243da775c9a249",
-        "rtl/rb_serial_gpu.v": "8ea8a54800b1221bb0e1b989f9f754a62597dcdaf2035720708e4a942d1f84e5",
-        "rtl/rb_isa.vh": "4fe5bea858349ee9c85160a43574f0dd7eb08f28054240a7a20b0cbb82f3e822",
-        "fpga/ulx3s/top.v": "5a7b6131c0400f4bc9f7812bd4606cb6264f7c711f1e6d071594c820ce538693",
-        "fpga/ulx3s/ulx3s.lpf": "71ef2a2e0d7f9de4174e7da2e82bb22d4e5e726db0b78234dfbeb4f09dcfb629",
+        "rtl/rb_uart_bridge.v": "34d349997e4cbafb8ed2cb4682db48876819e1306aad35ee3cd15fa6ffceb4b2",
+        "rtl/rb_serial_gpu.v": "bc53d3dd6b0d5ef36c08bb25137562de2c29e8346b16169be2e1f07b241cec8d",
+        "rtl/rb_isa.vh": "71445bfd4e37cf06bb1496a930a0edaf54098eacb0edd14e2510c678680fa697",
+        "fpga/ulx3s/top.v": "f37744b1a521b8d4d4eb7613ae5f00cdd31f5acd9193850ed385500998da7850",
+        "fpga/ulx3s/ulx3s.lpf": "eb0caa492bfa55c866a181d6448811a1f0d2719983cd68234c58270ec471511a",
         "fpga/ulx3s/v3.1.7.lpf": "1a2e18158017dafa433554f029a5b52c450356de4741b4217d4b5f42b3716f3f",
-        "fpga/build.py": "f627884282ba75893ef34c089c77b61a7e8dba1011b7e1b76b333256bc68c793"
+        "fpga/build.py": "91a287e9b575768e5f015419f61802f05e90e2922530716fc9a93713079674b9"
       },
-      "started_utc": "2026-10-12T18:18:30.982266+00:00",
+      "started_utc": "2026-10-23T10:53:52.615438+00:00",
       "status": "ready",
       "tools": {
-        "yosys": "Yosys 0.69+274 (git sha1 7513f8df8, Release, GNU /usr/bin/x86_64-w64-mingw32-g++ 15.2.1)",
-        "nextpnr-ecp5": "\"nextpnr-ecp5\" -- Next Generation Place and Route (Version nextpnr-0.11.1-54-g861c57be)"
+        "yosys": "Yosys 0.70+157 (git sha1 af9f71e51, Release, GNU /usr/bin/x86_64-w64-mingw32-g++ 15.2.1)",
+        "nextpnr-ecp5": "\"nextpnr-ecp5\" -- Next Generation Place and Route (Version nextpnr-0.11.1-65-ge677d5c3)"
       },
-      "synth_seconds": 60.1,
+      "synth_seconds": 59.0,
       "cells": {
-        "CCU2C": 2473,
+        "CCU2C": 2472,
         "DP16KD": 100,
-        "L6MUX21": 651,
-        "LUT4": 35910,
+        "L6MUX21": 299,
+        "LUT4": 35683,
         "MULT18X18D": 112,
-        "PFUMX": 5171,
+        "PFUMX": 4777,
         "TRELLIS_DPR16X4": 440,
-        "TRELLIS_FF": 8366
+        "TRELLIS_FF": 8380
       },
-      "pnr_seconds": 2002.7,
+      "pnr_seconds": 6395.3,
       "timing_passed": true,
       "fmax_mhz": {
-        "$glbnet$clk_25mhz$TRELLIS_IO_IN": 32.71
+        "$glbnet$clk_25mhz$TRELLIS_IO_IN": 36.08
       },
       "utilization": {
         "DCCA": {
@@ -178,11 +186,11 @@
         },
         "TRELLIS_COMB": {
           "available": 83640,
-          "used": 44382
+          "used": 44149
         },
         "TRELLIS_FF": {
           "available": 83640,
-          "used": 8366
+          "used": 8380
         },
         "TRELLIS_IO": {
           "available": 365,
@@ -194,22 +202,22 @@
         }
       },
       "bitstream": "build/fpga/ulx3s-85f/top.bit",
-      "bitstream_sha256": "5ca6210b7253590d6b630f744c47e653a054c542d88b0c6024933b17fe454c99",
-      "finished_utc": "2026-10-12T18:52:55.046282+00:00"
+      "bitstream_sha256": "22f2836ba148ac2a395aaab905ef8f61fbfd5f6832fc34ffdbe000101165cafd",
+      "finished_utc": "2026-10-23T12:41:32.122899+00:00"
     }
   },
   "tests": [
     {
       "name": "assembler, emulator, runtime, serial driver, build and preflight",
       "result": "passed",
-      "tests": 105,
+      "tests": 180,
       "failures": 0,
       "errors": 0,
       "skipped": 0,
-      "reports": "build/fast-tests.xml",
-      "report_sha256": "f780333f29dcd44288dfefd6b2df9af2d9c6176696fb759e51e53cb0ad0e17f4",
-      "started": "2026-10-12T14:49:53.284798-04:00",
-      "seconds": 2.945,
+      "report": "build/fast-tests.xml",
+      "report_sha256": "b8f777aa5f03974f57d1fdaaf7e84f6185006232bd1ee97f1170261775ba8d9e",
+      "started": "2026-10-23T10:30:58.644177-04:00",
+      "seconds": 11.916,
       "cases": [
         "test_encodings_roundtrip_through_the_disassembler",
         "test_field_layout",
@@ -237,6 +245,34 @@
         "test_errors_point_at_the_problem[.rept 2\\nx: nop\\n.endr-not allowed inside .rept]",
         "test_errors_point_at_the_problem[addi r(16), r0, 1-r16 does not exist]",
         "test_special_register_numbers_match_the_hardware_header",
+        "test_benchmark_counts_real_images_and_separates_timing[False]",
+        "test_benchmark_counts_real_images_and_separates_timing[True]",
+        "test_benchmark_stops_on_hidden_or_nonwinning_logit_mismatch[hidden]",
+        "test_benchmark_stops_on_hidden_or_nonwinning_logit_mismatch[logits]",
+        "test_cli_overwrites_stale_success_and_closes_connection[connect]",
+        "test_cli_overwrites_stale_success_and_closes_connection[verify]",
+        "test_cli_overwrites_stale_success_and_closes_connection[interrupt]",
+        "test_cli_emulator_report_is_explicit_and_has_no_gpu_timing",
+        "test_report_identity_changes_with_workload",
+        "test_request_counts[4-True-4-8-8]",
+        "test_request_counts[16-True-4-2-8]",
+        "test_request_counts[32-True-4-1-8]",
+        "test_request_counts[4-False-1-2-2]",
+        "test_request_counts[32-False-1-1-2]",
+        "test_request_counts[32-True-64-8-8]",
+        "test_request_counts[32-True-0-1-1]",
+        "test_every_lane_reads_the_broadcast_operand[0]",
+        "test_every_lane_reads_the_broadcast_operand[1]",
+        "test_every_lane_reads_the_broadcast_operand[2]",
+        "test_every_lane_reads_the_broadcast_operand[3]",
+        "test_every_lane_reads_the_broadcast_operand[4]",
+        "test_every_lane_reads_the_broadcast_operand[5]",
+        "test_every_lane_reads_the_broadcast_operand[6]",
+        "test_every_lane_reads_the_broadcast_operand[7]",
+        "test_lane_index_wraps_at_the_warp_width",
+        "test_all_lanes_read_before_any_lane_writes",
+        "test_needs_dp4a",
+        "test_encoding_roundtrip",
         "test_timing_is_required[report0-False]",
         "test_timing_is_required[report1-False]",
         "test_timing_is_required[report2-False]",
@@ -283,7 +319,54 @@
         "test_batched_needs_32_thread_blocks[cfg1]",
         "test_interleave_words_layout",
         "test_reject_bad_layouts",
+        "test_unrolled_loop_matches_and_saves_instructions[rows]",
+        "test_unrolled_loop_matches_and_saves_instructions[interleaved]",
         "test_wide_lines_pay_off_only_with_the_interleaved_layout",
+        "test_stream_trained_network_through_64kib[True-rows]",
+        "test_stream_trained_network_through_64kib[True-interleaved]",
+        "test_stream_trained_network_through_64kib[False-rows]",
+        "test_stream_trained_network_through_64kib[False-interleaved]",
+        "test_partial_batch_does_not_execute_all_reserved_slots",
+        "test_unfittable_tiled_batch_fails_before_upload[9-0]",
+        "test_unfittable_tiled_batch_fails_before_upload[None-6000]",
+        "test_tiled_batch_must_be_a_positive_integer[0]",
+        "test_tiled_batch_must_be_a_positive_integer[-1]",
+        "test_tiled_batch_must_be_a_positive_integer[1.5]",
+        "test_tiled_batch_must_be_a_positive_integer[True]",
+        "test_stream_validates_later_inputs_before_starting",
+        "test_tiled_model_validation_precedes_device_writes[shift]",
+        "test_tiled_model_validation_precedes_device_writes[shape]",
+        "test_tiled_model_validation_precedes_device_writes[weights]",
+        "test_tiled_model_validation_precedes_device_writes[overflow]",
+        "test_tiled_model_validation_precedes_device_writes[imem]",
+        "test_tiled_model_validation_precedes_device_writes[groups]",
+        "test_broadcast_kernel_matches_and_saves_instructions",
+        "test_broadcast_kernel_needs_dp4a_and_eight_lanes[cfg0]",
+        "test_broadcast_kernel_needs_dp4a_and_eight_lanes[cfg1]",
+        "test_double_buffered_tiles_match_and_need_bcast",
+        "test_matrix_unit_kernel_matches_and_saves_instructions[rows-single]",
+        "test_matrix_unit_kernel_matches_and_saves_instructions[rows-double_buffered]",
+        "test_matrix_unit_kernel_matches_and_saves_instructions[interleaved-single]",
+        "test_matrix_unit_kernel_matches_and_saves_instructions[interleaved-double_buffered]",
+        "test_matrix_unit_kernel_needs_the_unit_dp4a_and_eight_lanes[cfg0]",
+        "test_matrix_unit_kernel_needs_the_unit_dp4a_and_eight_lanes[cfg1]",
+        "test_matrix_unit_kernel_needs_the_unit_dp4a_and_eight_lanes[cfg2]",
+        "test_one_mma_is_a_matrix_product",
+        "test_mma_accumulates_and_mmaz_clears",
+        "test_inactive_lanes_keep_their_column_but_still_supply_rows",
+        "test_mmaz_clears_only_the_active_lanes",
+        "test_every_warp_has_its_own_tile",
+        "test_four_lane_warps_have_four_by_four_tiles",
+        "test_mmar_row_wraps_at_the_warp_width",
+        "test_mma_reads_its_operands_before_the_tile_changes",
+        "test_steps_are_counted",
+        "test_needs_the_matrix_unit[mma r2, r3-no_mma]",
+        "test_needs_the_matrix_unit[mma r2, r3-no_dp4a]",
+        "test_needs_the_matrix_unit[mmaz-no_mma]",
+        "test_needs_the_matrix_unit[mmaz-no_dp4a]",
+        "test_needs_the_matrix_unit[mmar r4, 0-no_mma]",
+        "test_needs_the_matrix_unit[mmar r4, 0-no_dp4a]",
+        "test_encoding_roundtrip",
         "test_bringup_checks_pass_on_the_emulator[cfg0]",
         "test_bringup_checks_pass_on_the_emulator[cfg1]",
         "test_bringup_reports_the_failing_layer",
@@ -319,79 +402,69 @@
       ]
     },
     {
-      "name": "GPU configurations and UART faults/inference",
+      "name": "GPU configurations, UART faults and serial inference",
       "result": "passed",
-      "tests": 8,
+      "tests": 9,
       "failures": 0,
       "errors": 0,
       "skipped": 0,
-      "reports": "build/rtl-regression-tests.xml",
-      "report_sha256": "5108d22a8da736fae4cf371ef743ea666afd70726560c2451f97be42ee967284",
-      "started": "2026-10-12T14:18:31.337264-04:00",
-      "seconds": 454.354,
+      "report": "build/rtl-regression-tests.xml",
+      "report_sha256": "596a1b3c5569fe4ae29d503edf5fdb4da31b8364526ec970c3e2655128164dd4",
+      "started": "2026-10-23T10:30:58.690811-04:00",
+      "seconds": 310.783,
       "cases": [
+        "test_serial_gpu[scalar]",
+        "test_uart_bridge[4]",
         "test_scenarios[default]",
         "test_scenarios[small]",
-        "test_scenarios[busy_mem]",
+        "test_scenarios[two_slots]",
         "test_scenarios[wide_lines]",
-        "test_uart_bridge[4]",
-        "test_uart_bridge[9]",
         "test_serial_gpu[packed]",
-        "test_serial_gpu[scalar]"
+        "test_scenarios[busy_mem]",
+        "test_uart_bridge[9]"
       ]
     },
     {
-      "name": "85F wrapper, full network and reset recovery",
+      "name": "85F wrapper: physical baud, full network, reset recovery",
+      "result": "passed",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "report": "build/ulx3s-tests.xml",
+      "report_sha256": "9eac326f8728a8859151c6fea9eb98da3d499b95c466a52981cd5e553c7e4fa0",
+      "started": "2026-10-23T10:30:58.703136-04:00",
+      "seconds": 881.406,
+      "cases": [
+        "test_ulx3s[full_network]",
+        "test_ulx3s[physical_baud]"
+      ]
+    },
+    {
+      "name": "85F wrapper: board benchmark through the UART pins",
       "result": "passed",
       "tests": 1,
       "failures": 0,
       "errors": 0,
       "skipped": 0,
-      "reports": "build/ulx3s-network-tests.xml",
-      "report_sha256": "ebd2899c2bf16b4e8f37f1325176b5d62cb373ba481b4219f3b3c60e6eb0ee86",
-      "started": "2026-10-12T14:18:31.359276-04:00",
-      "seconds": 608.97,
+      "report": "build/board-bench-tests.xml",
+      "report_sha256": "2637b2faa564e850a289eb006dd2b5291d8f8a74e2d1a883309b23236e2a0d78",
+      "started": "2026-10-23T10:30:58.692719-04:00",
+      "seconds": 1214.602,
       "cases": [
-        "test_ulx3s[full_network]"
-      ]
-    },
-    {
-      "name": "85F wrapper, physical 115200 baud and reset recovery",
-      "result": "passed",
-      "tests": 1,
-      "failures": 0,
-      "errors": 0,
-      "skipped": 0,
-      "reports": "build/sim/icarus_top_94a201efbc/results.xml",
-      "report_sha256": "a22213f2ab64338c050ec993eafef9d576f9cb0f6f2596fae47abb0eb2bf42e6",
-      "started": "2026-10-12T01:27:39.934597+00:00",
-      "seconds": 438.215,
-      "cases": [
-        "board"
+        "test_board_benchmark"
       ]
     }
   ],
   "emulator_bringup": {
     "command": "python fpga/bringup.py --emulator --images 20",
     "result": "passed",
-    "global_memory_bytes": 65536,
-    "checks": [
-      "configuration",
-      "whole-memory random data",
-      "address lines",
-      "vector add",
-      "reduction",
-      "20 images: every hidden activation and output score bit-exact"
-    ],
-    "correct_predictions": 20
-  },
-  "drawing_demo": {
-    "mode": "hidden-window self-test on the emulator",
-    "result": "passed",
-    "checks": [
-      "vertical stroke recognized as 1",
-      "injected serial CRC failure exits with failure",
-      "injected hidden-layer mismatch exits with failure"
+    "output": [
+      "PASS  hardware configuration (0.0s): 2 cores x 8 lanes x 4 warps, 64 KiB global memory, DP4A on",
+      "PASS  global memory (0.0s): 65,536 random bytes and 15 address lines",
+      "PASS  first kernel (vector add) (0.0s): 1,000 additions",
+      "PASS  tree reduction (0.0s): shared memory, barriers and divergence",
+      "PASS  digit network (0.8s): 20 test images bit-exact, 20/20 recognized"
     ]
   },
   "programmer_version": "ULX2S / ULX3S JTAG programmer v4.8 (git cc3ea93 built Jul 31 2026 04:48:12)",
@@ -402,9 +475,9 @@
     "package_member": "amd64/FTD2XX64.dll",
     "runtime_sha256": "52260f7751fbc545573ca29e4c27bfe005a97a98e9a7e5c28b77735568d6c5d5",
     "signature_status": "Valid",
-    "verified_utc": "2026-10-12T18:33:38.8927853Z",
+    "verified_utc": "2026-10-24T01:07:04.073554+00:00",
     "verification": "fujprog -V succeeded; version 4.8, git cc3ea93. No system USB driver was installed."
   },
-  "git_head": "d5462dbc9d1c2d52e3c8f9bb228b08271127192a",
-  "uncommitted_changes": true
+  "git_head": "a5bb6eb380aad15c16628a3289c74d60a1b30ff1",
+  "uncommitted_changes": false
 }

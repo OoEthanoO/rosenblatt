@@ -600,10 +600,10 @@ yet run on a physical board.
 | Build | GPU | Logic cells | Flip-flops | Block RAM | DSP | Max clock |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
 | Earlier ULX3S-25F build | 1 core x 4 lanes, 16-bit multiply | 13,872 / 24,288 (57%) | 3,306 | 50 / 56 | 20 / 28 | 51.7 MHz (historical) |
-| ULX3S-85F, PCB v3.1.7 | 2 cores x 8 lanes (the default design) | 44,382 / 83,640 (53%) | 8,366 | 100 / 208 | 112 / 156 | 32.71 MHz |
-| ULX3S-85F, PCB v3.0 | 2 cores x 8 lanes | 44,382 / 83,640 (53%) | 8,366 | 100 / 208 | 112 / 156 | 37.02 MHz |
+| ULX3S-85F, PCB v3.1.7 | 2 cores x 8 lanes (the default design) | 44,149 / 83,640 (53%) | 8,380 | 100 / 208 | 112 / 156 | 36.08 MHz |
+| ULX3S-85F, PCB v3.0 | 2 cores x 8 lanes | 44,149 / 83,640 (53%) | 8,380 | 100 / 208 | 112 / 156 | 35.36 MHz |
 
-Both 85F images passed the 25 MHz constraint after routing on 2026-10-12;
+Both 85F images passed the 25 MHz constraint after routing on 2026-10-23;
 the build script refuses to produce a bitstream if timing fails. The
 [validation record](../fpga/validation/ulx3s-85f.json) identifies their exact
 sources and tool versions. The 25F measurement predates the current board

@@ -74,9 +74,9 @@ the scripts.
 
 Routing can take a substantial amount of time. The default is `router1`,
 placement seed 1, and speed grade 6. `nextpnr.log` records progress. With the
-OSS CAD Suite of 2026-10-19 (nextpnr 0.11.1-65), the PCB v3.1.7 build spent
-1 h 47 min in place and route on a laptop, three times as long as with the
-tools of 2026-10-12, and met timing at 36.08 MHz. A build
+OSS CAD Suite of 2026-10-19 (nextpnr 0.11.1-65), each PCB build spent about
+1 h 45 min in place and route on a laptop, three times as long as with the
+tools of 2026-10-12. A build
 must meet the **25 MHz constraint after routing** before `top.bit` is
 produced. A failed, interrupted, or synthesis-only rebuild invalidates any
 previous `top.bit`. If sources change during a build, it must be rerun.
@@ -300,31 +300,34 @@ runs listed in its docstring have produced their reports. It refuses to write
 anything if an image is stale, a report failed, or a report is older than the
 sources.
 
-### Recorded results: 2026-10-12
+### Recorded results: 2026-10-23
 
-These results are for the Verilog as of commit `49a2209`. The changes after
-it (word-only store merging, the register scoreboard, `dp4ab`, the matrix
-unit and its slots) changed the sources, so rebuild before programming a
-board; `bringup.py` refuses a stale image.
+These results are for the Verilog as of commit `a5bb6eb`, built with the OSS
+CAD Suite of 2026-10-19 (Yosys 0.70, nextpnr 0.11.1-65). Rebuild after any
+change to the sources; `bringup.py` refuses a stale image.
 
 Both 85F builds completed with speed grade 6, `router1`, and placement seed 1:
 
 | PCB profile | Final routed maximum clock | Required clock | Result |
 | --- | ---: | ---: | --- |
-| v3.1.6/v3.1.7 (`3.1.7`) | 32.71 MHz | 25 MHz | PASS |
-| v2.x/v3.0.x (`3.0`) | 37.02 MHz | 25 MHz | PASS |
+| v3.1.6/v3.1.7 (`3.1.7`) | 36.08 MHz | 25 MHz | PASS |
+| v2.x/v3.0.x (`3.0`) | 35.36 MHz | 25 MHz | PASS |
 
-Both use 44,382 / 83,640 logic cells (53%), 8,366 flip-flops, 100 / 208 block
+Both use 44,149 / 83,640 logic cells (53%), 8,380 flip-flops, 100 / 208 block
 RAMs and 112 / 156 DSP multipliers. They still run at the board's **25 MHz**;
 the timing results do not change the UART divider or operating clock.
 
-Validation passed 105 fast tests, eight GPU/UART RTL tests, and both board
-wrapper tests (physical baud and full-network inference). The emulator
-bring-up checked all 64 KiB, vector addition, reduction, and 20 MNIST images;
-every hidden activation and output score matched, with 20/20 predictions
-correct. The drawing demo also passed its hidden-window check and rejected
-injected serial and hidden-layer failures. Windows `--doctor` passed for
-both images after supplying fujprog's FTDI runtime.
+Validation passed 180 fast tests; nine GPU and serial-link RTL tests (every
+scenario on five GPU configurations, UART faults, and inference through the
+simulated serial pins); both board-wrapper tests (physical baud and
+full-network inference, each with reset recovery); and the board benchmark
+through the UART pins. The emulator bring-up checked all 64 KiB, vector
+addition, a tree reduction, and 20 MNIST images; every hidden activation and
+output score matched, with 20/20 predictions correct. The drawing demo passed
+its hidden-window self-test, and the fast tests confirm that it shows no
+prediction when the hidden or output layer differs from the reference.
+Windows `--doctor` passed for both images after supplying fujprog's FTDI
+runtime.
 
 The [validation record](../fpga/validation/ulx3s-85f.json) contains the exact
 source checksums, tool versions, bitstream checksums and test results. These
