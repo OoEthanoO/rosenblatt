@@ -102,6 +102,20 @@ lsu1: one global memory instruction in flight per core (the first design); park:
 | scoreboard_warps2_per_image | 19,021 | 11,457 | 14,404 | 0.31 | 76% | 62% | 1,736 | 4/4 |
 | scoreboard_per_image | 15,804 | 11,471 | 14,404 | 0.37 | 91% | 6% | 17,397 | 4/4 |
 
+## Eight warps per core against memory latency (per_image, one core)
+
+One core, so that the kernel's blocks, which fill a core, run on the same hardware with 4 and 8 warps. latency32: 32 cycles per global load instead of 8. lsu8: the load/store unit holds 8 instructions in flight instead of 4.
+
+| Experiment | cycles / image | warp instructions / image | global requests / image | IPC per core | memory port busy | issue slots lost to memory waits | replays / image | LSU busy | correct |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| cores1_per_image | 28,620 | 11,471 | 14,404 | 0.40 | 50% | 26% | 9,463 | 98% | 4/4 |
+| cores1_warps8_per_image | 21,675 | 11,499 | 14,404 | 0.53 | 66% | 15% | 6,861 | 98% | 4/4 |
+| cores1_warps8_lsu8_per_image | 21,597 | 11,499 | 14,404 | 0.53 | 67% | 13% | 7,222 | 98% | 4/4 |
+| cores1_latency32_per_image | 39,670 | 11,471 | 14,404 | 0.29 | 36% | 71% | 79 | 99% | 4/4 |
+| cores1_scoreboard_latency32_per_image | 35,178 | 11,471 | 14,404 | 0.33 | 41% | 31% | 12,694 | 99% | 4/4 |
+| cores1_warps8_latency32_per_image | 34,115 | 11,499 | 14,404 | 0.34 | 42% | 13% | 18,131 | 99% | 4/4 |
+| cores1_warps8_latency32_lsu8_per_image | 24,436 | 11,499 | 14,404 | 0.47 | 59% | 22% | 7,454 | 98% | 4/4 |
+
 ## Memory line size and weight layout (per_image)
 
 lineN: one request moves an N-byte line (default 4); rows: weights row-major (default); interleaved: neighbouring neurons' weight words side by side.

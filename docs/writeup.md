@@ -16,7 +16,7 @@ times faster on the same problem.
 | Hardware | SIMT GPU, 2 cores x 8 lanes x 4 warps (parameterized), about 2,200 lines of Verilog |
 | Software | ISA, assembler, emulator, runtime and 6 kernels; about 7,300 lines of Python including tests and tools |
 | Network | 784-64-10 MLP, int8, 97.80% on the MNIST test set (float32: 97.77%) |
-| Verified | every scenario bit-exact against the emulator on 5 hardware configurations; the full network over a simulated UART |
+| Verified | every scenario bit-exact against the emulator on 6 hardware configurations; the full network over a simulated UART |
 | Baseline tiled kernel | 3,139 cycles per digit (32-image batch, 256 KiB RTL simulation, DP4A): 125.6 µs at 25 MHz |
 | Beyond the baseline | optional memory-system upgrades (11% more logic), a cross-lane dot product (4%) and a matrix unit (10%, with a second slot per warp under 1% more): with kernels written for them, one image 2.9x faster, tiled 3.4x |
 | FPGA | ULX3S ECP5-85F: the full design occupies 53% of the logic, with 64 KiB global memory and two supported PCB pinouts. Not yet run on a physical board |
@@ -237,13 +237,14 @@ on both and requires **identical outputs and identical counters**:
 - the network three ways: one image at a time, batched and tiled (with every
   kernel variant, the matrix unit's included), and the full trained model,
   with both weight layouts;
-- five hardware configurations: the default; a 1-core 4-lane build with a
+- six hardware configurations: the default; a 1-core 4-lane build with a
   16-bit multiplier, no DP4A, a one-instruction load/store queue and the
   register scoreboard; a 3-core build with slow memory, 8-byte lines, a
   two-instruction queue, parked warps and a matrix unit with 4x4 tiles and
-  four slots per warp; and the default configuration with 32-byte
+  four slots per warp; the default configuration with 32-byte
   global-memory lines, the scoreboard and the matrix unit, with one slot per
-  warp and with two.
+  warp and with two; and one core with eight warps, a 32-cycle memory, an
+  eight-instruction queue, the scoreboard and two matrix-unit slots.
 
 The UART bridge is tested at the pin level (corrupted frames, glitches, bad
 stop bits, ±1% baud error, stalled buses), and the production Python driver runs
@@ -256,7 +257,7 @@ measures against the NumPy reference.
 Every number in this section comes from cycle-accurate simulation of the
 Verilog (Icarus Verilog) running real MNIST test images, with every output score
 checked against the NumPy reference. `python bench/profile_mnist.py` reruns
-all 57 experiments; full tables are in
+all 63 experiments; full tables are in
 [bench/results/summary.md](../bench/results/summary.md). Unless stated
 otherwise the GPU is the default build: 2 cores x 8 lanes x 4 warps, global
 memory latency 8 cycles, one 32-bit request per cycle.
@@ -302,7 +303,8 @@ instruction (DP4A). Every further gain depends on the memory system.
   one-image kernel by 6% and the tiled kernel by 16%; only 32 cycles hurts
   (+39% and +33%). Four warps, each able to have a load in flight, cover the
   wait. With two warps per core the one-image kernel is 34% slower (23,897
-  cycles).
+  cycles). Eight warps hide a longer wait, if the load/store unit can keep
+  their loads in flight (below).
 - **Bandwidth** is not hidden (above): it is the resource both kernels run out of.
 - **More cores** help only when there is work to spread. One image has only
   64 hidden neurons, two blocks, so a 4-core GPU runs it exactly as fast as a
@@ -312,6 +314,40 @@ instruction (DP4A). Every further gain depends on the memory system.
   busy).
 
 ![speedup with more cores](img/core_scaling.png)
+
+### Eight warps per core
+
+Real SMs hold 48 to 64 warps; Rosenblatt's cores hold four. The design is
+parameterized, so eight is a rebuild. These runs use one core: the one-image
+kernel makes each block as large as a core, so with eight warps the hidden
+layer becomes a single block and a second core would have nothing to do.
+Cycles per digit:
+
+| Warps per core | Load/store queue | 8-cycle memory | 32-cycle memory |
+| --- | ---: | ---: | ---: |
+| 4 | 4 | 28,620 | 39,670 |
+| 4, with the scoreboard | 4 | | 35,178 |
+| 8 | 4 | 21,675 | 34,115 |
+| 8 | 8 | **21,597** | **24,436** |
+
+At the default latency eight warps are 1.32x faster: while some wait for
+their loads, more of the others are ready to issue. At a 32-cycle latency
+they gained only 16%, and the counters showed why. The warps retried their
+loads 18,131 times per image against a full load/store unit. Its queue holds
+four instructions, and with 32 cycles per load that allows about one load
+every eight cycles, however many warps are waiting to issue one. This is
+Little's law: to sustain a rate of requests, a memory system must keep the
+latency times that rate in flight. With room for eight instructions, the
+long latency costs 13% instead of 39%. The scoreboard alone, which lets each
+of four warps run past its own loads, recovers less (35,178 cycles). Hiding
+latency takes both halves: warps with work of their own, and a memory system
+that keeps their requests in flight.
+
+On the FPGA the extra warps are almost free. Synthesis for the 85F gives
+1.5% more LUTs, 4% more flip-flops and no more block RAM, because a register
+file for four warps (64 words) fills only an eighth of each block RAM it
+occupies. In silicon the register file is the expensive part: at 256 KB, it
+is among the largest memories of a recent NVIDIA SM.
 
 ### Profiling the hardware itself
 
@@ -754,10 +790,13 @@ In order of expected payoff, judged from the measurements above:
    that a kernel reads one back while the unit fills the other, would hide
    them. That is where tensor cores get their throughput: many multipliers
    per instruction, kept busy by a pipeline built to feed them.
-3. **More warps per core.** Four warps hide an 8-cycle memory latency but not a
-   32-cycle one. Real SMs hold 48-64 warps. The scoreboard lets each warp hide
-   some latency itself: with it, halving the warps costs the one-image kernel
-   20% instead of 34%.
+3. **Two blocks per core.** Eight warps per core hide a long memory latency,
+   given a load/store queue that keeps their loads in flight, and cost almost
+   nothing on the FPGA (section 4). But a core runs one block at a time, and
+   the kernels' blocks either have 32 threads (the tiled kernel), leaving half
+   of an eight-warp core idle, or fill the core (the one-image kernel), leaving
+   the second core idle. A core that holds two blocks at once, as an SM holds
+   many, would put eight warps to use on the two-core GPU.
 4. **The memory options and the matrix unit on the board.** 32-byte lines,
    the scoreboard and an 8-instruction queue together cost 11% more logic,
    and the matrix unit 10% (with two slots per warp it routes at 30.58 MHz).

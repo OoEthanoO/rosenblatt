@@ -157,7 +157,7 @@ RTL tests need Icarus Verilog (`iverilog`, `vvp`) on `PATH`. The harness also
 finds an OSS CAD Suite installation at `~/tools/oss-cad-suite` or at
 `$OSS_CAD_SUITE`.
 
-Every scenario runs on the emulator and on the Verilog in five hardware
+Every scenario runs on the emulator and on the Verilog in six hardware
 configurations, and outputs *and* performance counters must agree exactly.
 Scenarios: vector addition, naive and tiled matrix multiply, a tree reduction,
 random ALU programs, random nested divergence with loops and early returns,

@@ -235,7 +235,7 @@ the RTL tests require both to agree exactly.
   distances (the scoreboard's stress test), random programs around the
   matrix unit (`mma` with loads, `dp4a`s, divergence and barriers), every
   load/store flavour, barriers, and three neural-network paths.
-- `tests/rtl/`: every scenario on the Verilog under five hardware
+- `tests/rtl/`: every scenario on the Verilog under six hardware
   configurations (outputs and event counters must match the emulator exactly),
   the UART bridge at the pin level, and the whole GPU driven through UART.
 - `bench/profile_mnist.py` checks every logit of every image it profiles.

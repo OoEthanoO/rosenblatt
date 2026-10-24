@@ -29,6 +29,10 @@ CONFIGS = {
     "wide_lines": Config(gmem_line_bytes=32, scoreboard=True, mma=True),
     # the same with two operations per warp in the matrix unit at once
     "two_slots": Config(gmem_line_bytes=32, scoreboard=True, mma=True, mma_slots=2),
+    # one core with eight warps, a slow memory, an eight-instruction load/store
+    # queue, the scoreboard and the matrix unit
+    "eight_warps": Config(num_cores=1, num_warps=8, gmem_latency=32, lsu_depth=8, scoreboard=True,
+                          mma=True, mma_slots=2),
 }
 
 

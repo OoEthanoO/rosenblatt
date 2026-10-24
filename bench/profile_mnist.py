@@ -116,6 +116,22 @@ def experiments() -> dict[str, Spec]:
                                                 TILED_COUNT, "interleaved", {"mma": True})
     exp["slots2_dbuf_mma_tiled"] = ({"mma": True, "mma_slots": 2}, "tiled", True, TILED_COUNT, "rows",
                                     {"mma": True, "dbuf": True})
+    # 14. more warps per core against a longer memory latency, on one core: the
+    #     one-image kernel's blocks fill a core, so with 8 warps a second core
+    #     would get no work. cores1_per_image is the 4-warp, 8-cycle point.
+    exp["cores1_latency32_per_image"] = ({"num_cores": 1, "gmem_latency": 32}, "per_image", True,
+                                         PER_IMAGE_COUNT, "rows")
+    for lat in (8, 32):
+        name = "_latency32" if lat == 32 else ""
+        exp[f"cores1_warps8{name}_per_image"] = (
+            {"num_cores": 1, "num_warps": 8, "gmem_latency": lat}, "per_image", True, PER_IMAGE_COUNT, "rows")
+        #  8 warps can each have a load in flight: give the load/store unit room for them
+        exp[f"cores1_warps8{name}_lsu8_per_image"] = (
+            {"num_cores": 1, "num_warps": 8, "gmem_latency": lat, "lsu_depth": 8}, "per_image", True,
+            PER_IMAGE_COUNT, "rows")
+    #     ...and the register scoreboard instead of more warps
+    exp["cores1_scoreboard_latency32_per_image"] = ({"num_cores": 1, "gmem_latency": 32, "scoreboard": True},
+                                                    "per_image", True, PER_IMAGE_COUNT, "rows")
     return exp
 
 

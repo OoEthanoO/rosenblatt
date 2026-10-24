@@ -33,6 +33,7 @@ def metrics(r: dict) -> dict:
         "replays_per_image": c["replays"] / n,
         "lane_util": c["lane_ops"] / max(1, c["issued"] * cfg["num_lanes"]),
         "mma_busy": c.get("mma_steps", 0) / max(1, c["active"]),
+        "lsu_busy": c["lsu_busy"] / max(1, c["active"]),
         # lower bounds: the memory port serving one request per interval, the
         # matrix units (one per core) computing one tile row per cycle
         "port_floor": r["device_gmem_reqs"] * cfg["gmem_interval"] / n,
@@ -90,6 +91,14 @@ def main() -> int:
                 "park: warps sleep while the LSU is busy instead of retrying.")
     section("Warps per core (per_image)", ["warps2_per_image", "per_image_dp4a",
                                            "scoreboard_warps2_per_image", "scoreboard_per_image"])
+    section("Eight warps per core against memory latency (per_image, one core)",
+            ["cores1_per_image", "cores1_warps8_per_image", "cores1_warps8_lsu8_per_image",
+             "cores1_latency32_per_image", "cores1_scoreboard_latency32_per_image",
+             "cores1_warps8_latency32_per_image", "cores1_warps8_latency32_lsu8_per_image"],
+            "One core, so that the kernel's blocks, which fill a core, run on the same hardware with 4 and "
+            "8 warps. latency32: 32 cycles per global load instead of 8. lsu8: the load/store unit holds "
+            "8 instructions in flight instead of 4.",
+            COLS[:-1] + [("lsu_busy", "LSU busy", ".0%"), COLS[-1]])
     for w in ("per_image", "tiled"):
         section(f"Memory line size and weight layout ({w})",
                 [f"{w}_dp4a", f"interleaved_{w}"] +
