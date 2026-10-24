@@ -13,13 +13,13 @@ times faster on the same problem.
 
 | | |
 | --- | --- |
-| Hardware | SIMT GPU, 2 cores x 8 lanes x 4 warps (parameterized), about 2,200 lines of Verilog |
-| Software | ISA, assembler, emulator, runtime and 6 kernels; about 7,300 lines of Python including tests and tools |
+| Hardware | SIMT GPU, 2 cores x 8 lanes x 4 warps (parameterized), about 2,300 lines of Verilog |
+| Software | ISA, assembler, emulator, runtime and 6 kernels; about 8,000 lines of Python including tests and tools |
 | Network | 784-64-10 MLP, int8, 97.80% on the MNIST test set (float32: 97.77%) |
 | Verified | every scenario bit-exact against the emulator on 6 hardware configurations; the full network over a simulated UART |
 | Baseline tiled kernel | 3,139 cycles per digit (32-image batch, 256 KiB RTL simulation, DP4A): 125.6 µs at 25 MHz |
 | Beyond the baseline | optional memory-system upgrades (11% more logic), a cross-lane dot product (4%) and a matrix unit (10%, with a second slot per warp under 1% more): with kernels written for them, one image 2.9x faster, tiled 3.4x |
-| FPGA | ULX3S ECP5-85F: the full design occupies 53% of the logic, with 64 KiB global memory and two supported PCB pinouts. Not yet run on a physical board |
+| FPGA | ULX3S ECP5-85F: the full design occupies 53% of the logic, with 64 KiB global memory and two supported PCB pinouts; one core on a Digilent Basys 3 (Artix-7). Not yet run on a physical board |
 | RTX 5080 | the same network in 4.1 ns per digit (cuBLAS, tensor cores) |
 
 ## 1. The machine in one page
@@ -650,6 +650,14 @@ The design runs from the board's 25 MHz oscillator. The global memory
 unused. PCB v3.1.6/v3.1.7 and v2.x/v3.0.x have separate pin profiles. The build
 records source and bitstream checksums so the bring-up script can reject a
 stale image. See [fpga.md](fpga.md) for the PCB selection and first-use steps.
+
+A second board, the Digilent Basys 3, carries an AMD Artix-7 XC7A35T, which
+holds one core of the design. Yosys estimates that core at about 17,000 of
+the chip's 20,800 LUTs, and the full two-core design at about 32,700. The
+open-source tools cannot place and route an Artix-7, so this board is built
+with AMD's Vivado through a script that writes the same build summary as the
+ULX3S flow. Its top level is simulated through its serial pins like the
+ULX3S's, but it has not yet been built with Vivado or run on a board.
 
 What the FPGA work taught, in short (details in [fpga.md](fpga.md)):
 
